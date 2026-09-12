@@ -110,7 +110,9 @@ class MediaIn(BaseModel):
 
 # ---------- 工厂 ----------
 def create_app() -> FastAPI:
-    app = FastAPI(title="social-hub", version="0.1.0", lifespan=lifespan)
+    from .. import __version__
+
+    app = FastAPI(title="social-hub", version=__version__, lifespan=lifespan)
 
     # ---- 探针（免认证）----
     @app.get("/healthz")
