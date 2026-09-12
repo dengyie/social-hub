@@ -1,0 +1,23 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# 运行时数据（绝不入库）
+.env
+data/
+logs/
+media/
+*.db
+*.db-wal
+*.db-shm
+
+# 本机杂项
+.smoke-demo/
+.DS_Store
+Thumbs.db

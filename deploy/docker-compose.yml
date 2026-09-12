@@ -1,0 +1,14 @@
+services:
+  social-hub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: social-hub
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8767:8767"   # 公网暴露走 CF Tunnel + Access（设计文档 §9.3），不直接裸端口
+    volumes:
+      - ${SOCIAL_HUB_DATA:-~/.social-hub}:/data
+    environment:
+      SOCIAL_HUB_DATA_DIR: /data
+      SOCIAL_HUB_API_TOKEN: ${SOCIAL_HUB_API_TOKEN:-}
