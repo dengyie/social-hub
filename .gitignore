@@ -8,11 +8,11 @@ __pycache__/
 build/
 dist/
 
-# 运行时数据（绝不入库）
+# 运行时数据（绝不入库；根目录锚定，勿匹配 server/social_hub/media 源码包）
 .env
-data/
-logs/
-media/
+/data/
+/logs/
+/media/
 *.db
 *.db-wal
 *.db-shm
