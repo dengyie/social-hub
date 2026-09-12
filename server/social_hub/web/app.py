@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from ..adapters.registry import load_builtin_adapters, registered_platforms, get_adapter
@@ -40,6 +41,12 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
     setup_logging(settings.logs_dir)
+    if not settings.api_token:
+        # 无 token 时 require_auth 只放行 loopback——但请求经同机隧道/反代转发后
+        # client.host 恰是 127.0.0.1，等于对公网开放；必须留痕提醒运维
+        log.warning("SOCIAL_HUB_API_TOKEN not set: API allows loopback only. "
+                    "If this service is exposed via a tunnel/reverse proxy on the same host, "
+                    "remote requests will appear as 127.0.0.1 and be ACCEPTED — set a token!")
     init_db()
     load_builtin_adapters()
     orch = Orchestrator()
@@ -230,6 +237,12 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="scheduled_at must be ISO8601")
         with get_session_factory()() as session:
             try:
+                task = enqueue_publish(session, body.draft_id, body.platform, body.account_alias, scheduled)
+                tid, status = task.id, task.status
+                session.commit()
+            except IntegrityError:
+                # 并发同 key 入队撞 ux_active_idem：回滚后重查——此时活跃任务已存在，幂等命中
+                session.rollback()
                 task = enqueue_publish(session, body.draft_id, body.platform, body.account_alias, scheduled)
                 tid, status = task.id, task.status
                 session.commit()

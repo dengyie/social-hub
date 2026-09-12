@@ -112,26 +112,30 @@ class Orchestrator:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                worked = self.run_once()
+                worked = self.run_once() is not None
             except Exception:
                 log.exception("run_once crashed", extra={"worker": self.worker_id})
                 worked = False
             if not worked:
                 self._stop.wait(0.5)
 
-    def run_once(self) -> bool:
-        """认领并执行一个任务；无任务返回 False。"""
+    def run_once(self, lease_seconds: int | None = None) -> int | None:
+        """认领并执行一个任务；无任务返回 None。
+
+        lease_seconds 可覆盖默认租约（CLI 内联执行用：执行期间没有心跳线程，
+        租约必须覆盖整个执行窗口，防止被常驻 daemon 误回收后重复执行）。
+        """
         task_id = claim_next(
             get_claim_engine(),
             get_session_factory(),
             self.worker_id,
-            self.settings.lease_seconds,
+            lease_seconds or self.settings.lease_seconds,
             self.settings.max_retries,
         )
         if task_id is None:
-            return False
+            return None
         self._execute(task_id)
-        return True
+        return task_id
 
     # ---- 执行 ----
     def _execute(self, task_id: int) -> None:
@@ -218,9 +222,12 @@ class Orchestrator:
         """CLI --wait：持续 run_once 直到目标任务终态（M0 单机串行足够）。
 
         任务长时间停在 queued（限频窗口/无 worker）→ stall_after 秒后快速失败，不空转。
+        内联执行没有心跳线程：认领时把租约拉长到 drain 总时限之外，
+        避免「执行中租约到期 → 常驻 daemon 回收 → 任务被重复执行」。
         """
         deadline = time.monotonic() + timeout
         last_status, last_change = None, time.monotonic()
+        inline_lease = self.settings.lease_seconds + int(timeout) + 30
         while time.monotonic() < deadline:
             with get_session_factory()() as session:
                 task = session.get(AutomationTask, task_id)
@@ -234,6 +241,6 @@ class Orchestrator:
             elif time.monotonic() - last_change > stall_after:
                 raise TimeoutError(f"task #{task_id} stuck in '{status}' for {stall_after}s "
                                    f"(rate-limited account or no worker?)")
-            self.run_once()
+            self.run_once(lease_seconds=inline_lease)
             time.sleep(0.2)
         raise TimeoutError(f"task #{task_id} not terminal within {timeout}s")

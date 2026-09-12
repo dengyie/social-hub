@@ -55,6 +55,12 @@ def serve(
 ):
     """启动 daemon（API + 编排器 worker + 调度器）。"""
     settings = _init()
+    if host not in ("127.0.0.1", "localhost", "::1") and not settings.api_token:
+        # deny-by-default：非 loopback 绑定 + 无 token = 对外开放（隧道/端口映射场景同理）
+        _err(ValueError(
+            "refusing to serve: --host 非 loopback 且未设置 SOCIAL_HUB_API_TOKEN"
+            "（API 会完全开放；请设置 token 或改用 127.0.0.1）"
+        ))
     import uvicorn
 
     uvicorn.run(

@@ -11,4 +11,6 @@ services:
       - ${SOCIAL_HUB_DATA:-~/.social-hub}:/data
     environment:
       SOCIAL_HUB_DATA_DIR: /data
-      SOCIAL_HUB_API_TOKEN: ${SOCIAL_HUB_API_TOKEN:-}
+      # 必填（deny-by-default）：容器绑定 0.0.0.0，无 token 时 serve 拒绝启动——
+      # 端口映射/隧道会把服务暴露出去，不允许无鉴权默认
+      SOCIAL_HUB_API_TOKEN: ${SOCIAL_HUB_API_TOKEN:?set SOCIAL_HUB_API_TOKEN before starting}

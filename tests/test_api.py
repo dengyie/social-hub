@@ -117,3 +117,31 @@ def test_auth_token_required(env, monkeypatch):
                           headers={"Authorization": "Bearer tok123"}).status_code == 200
         # 探针免认证
         assert client.get("/healthz").status_code == 200
+
+
+def test_publish_endpoint_integrity_race_is_idempotent(env, monkeypatch):
+    """并发同 key 入队撞部分唯一索引时，endpoint 必须幂等返回而非 500。"""
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session
+
+    with TestClient(create_app()) as client:
+        client.post("/api/v1/accounts", json={"platform": "mock", "alias": "demo", "vars": {"token": "x"}})
+        did = client.post("/api/v1/drafts", json={"title": "race", "platform": "mock"}).json()["id"]
+
+        orig = Session.commit
+        state = {"n": 0}
+
+        def flaky_commit(self):
+            if state["n"] == 0:  # 第一次 commit 模拟撞 ux_active_idem
+                state["n"] += 1
+                raise IntegrityError("INSERT INTO automation_tasks", None, Exception("ux_active_idem"))
+            return orig(self)
+
+        monkeypatch.setattr(Session, "commit", flaky_commit)
+        payload = {"draft_id": did, "platform": "mock", "account_alias": "demo"}
+        r1 = client.post("/api/v1/tasks/publish", json=payload)
+        assert r1.status_code == 201, r1.text  # 撞索引后走幂等恢复，而非 500
+        monkeypatch.undo()
+        r2 = client.post("/api/v1/tasks/publish", json=payload)
+        assert r2.status_code == 201
+        assert r2.json()["task_id"] == r1.json()["task_id"]  # 同 key 幂等命中

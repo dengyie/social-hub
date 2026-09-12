@@ -72,3 +72,26 @@ def test_cli_cdp_port_redline(env):
     assert r.exit_code == 1
     r = runner.invoke(app, ["account", "add", "fakecdp", "a3", "--cdp-port", "9301"])
     assert r.exit_code == 0, _output(r)
+
+
+def test_serve_deny_by_default(env, monkeypatch):
+    """非 loopback 绑定 + 无 token → 拒绝启动；设 token 或 loopback 才放行。"""
+    from social_hub import config as cfg
+
+    monkeypatch.delenv("SOCIAL_HUB_API_TOKEN", raising=False)
+    cfg.reset_settings()
+    r = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+    assert r.exit_code == 1
+    assert "SOCIAL_HUB_API_TOKEN" in _output(r)
+
+    monkeypatch.setenv("SOCIAL_HUB_API_TOKEN", "tok")
+    cfg.reset_settings()
+    called: dict = {}
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: called.setdefault("ok", True))
+    r = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+    assert r.exit_code == 0, _output(r)
+    assert called.get("ok")
+
+    r = runner.invoke(app, ["serve"])  # loopback 无 token 允许（本机调试默认）
+    assert r.exit_code == 0, _output(r)

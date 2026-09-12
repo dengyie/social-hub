@@ -153,3 +153,23 @@ def test_reclaim_exhausted_fails(env):
         t = s.get(AutomationTask, tid)
         assert t.status == "failed"
         assert t.error_class == "TransientExhausted"
+
+
+def test_drain_claims_with_extended_lease(env, monkeypatch):
+    """CLI 内联执行没有心跳线程：drain 必须用加长租约认领，
+    否则执行中租约到期 → 常驻 daemon 回收 → 任务被重复执行（红线）。"""
+    from social_hub.core import orchestrator as orch_mod
+
+    tid = _enqueue()
+    captured: dict = {}
+    orig = orch_mod.claim_next
+
+    def spy(engine, sf, worker, lease, *a, **kw):
+        captured["lease"] = lease
+        return orig(engine, sf, worker, lease, *a, **kw)
+
+    monkeypatch.setattr(orch_mod, "claim_next", spy)
+    orch = orch_mod.Orchestrator(worker_prefix="drain-test")
+    orch.drain_until_terminal(tid, timeout=120)
+    assert _status(tid) == "done"
+    assert captured["lease"] >= env.lease_seconds + 120

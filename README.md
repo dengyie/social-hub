@@ -37,7 +37,7 @@ python -m venv .venv
 ```bash
 shub account add mock --alias demo --var token=demo
 shub draft create --title "你好 social-hub" --content-file ./demo.html --platform mock --account demo
-shub publish now --draft 1 --platform mock --account demo --wait
+shub publish --draft 1 --platform mock --account demo --wait
 shub task show 1        # status=done, result_ref=https://mock.example/note/...
 ```
 
@@ -49,7 +49,7 @@ shub account add gzh --alias main --var app_id=wxXXXX --var app_secret=XXXX
 shub media add ./cover.jpg
 shub draft create --title "标题(≤64字)" --content-file ./article.html \
   --author your-name --cover-media 1 --platform gzh --account main
-shub publish now --draft 1 --platform gzh --account main --wait
+shub publish --draft 1 --platform gzh --account main --wait
 ```
 
 公众号发布链路：上传封面素材 → 草稿箱 → `freepublish` 发布 → 轮询核验 → 返回文章链接。
@@ -61,6 +61,10 @@ docker run -d --name social-hub -p 127.0.0.1:8767:8767 \
   -v ~/.social-hub:/data \
   -e SOCIAL_HUB_API_TOKEN=change-me \
   ghcr.io/dengyie/social-hub:latest
+
+> **⚠️ 必须设置 `SOCIAL_HUB_API_TOKEN`**：容器绑定 `0.0.0.0`，未设置 token 时 `shub serve`
+> 会拒绝启动（deny-by-default）。端口映射/隧道会把请求转成"来自 127.0.0.1"，
+> 无 token 的 loopback 放行逻辑会误放行公网请求。
 
 # 或本地构建
 docker compose -f deploy/docker-compose.yml up -d   # 监听 127.0.0.1:8767
