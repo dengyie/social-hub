@@ -1,5 +1,9 @@
 # social-hub
 
+[![CI](https://github.com/dengyie/social-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/dengyie/social-hub/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 自研多平台社媒自动发布系统——一次创作，多平台分发。
 
 双通道架构：
@@ -53,10 +57,26 @@ shub publish now --draft 1 --platform gzh --account main --wait
 ### 远程服务器 / Docker
 
 ```bash
+docker run -d --name social-hub -p 127.0.0.1:8767:8767 \
+  -v ~/.social-hub:/data \
+  -e SOCIAL_HUB_API_TOKEN=change-me \
+  ghcr.io/dengyie/social-hub:latest
+
+# 或本地构建
 docker compose -f deploy/docker-compose.yml up -d   # 监听 127.0.0.1:8767
 # 公网暴露建议走 Cloudflare Tunnel 等隧道，容器不直接裸端口
 # 设置 SOCIAL_HUB_API_TOKEN 后 API 强制 Bearer 鉴权；未设置仅放行 loopback
 ```
+
+## 开发与发布
+
+```bash
+python -m pytest -q          # 32 测试（CI 矩阵：py3.10/3.11/3.12 + Windows）
+python scripts/bench.py      # 性能基准
+```
+
+- **CI**：push / PR 自动跑 pytest 矩阵（Linux py3.10–3.12 + Windows）
+- **打包发布**：推 tag（`git tag v0.1.0 && git push --tags`）→ 测试通过后自动构建 sdist/wheel 上传 GitHub Release，并构建 Docker 镜像推到 `ghcr.io/dengyie/social-hub`（`v` 前缀剥离 + `latest`）
 
 ## 目录结构
 
