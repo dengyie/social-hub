@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,12 +14,18 @@ from ..core.state import utcnow
 from ..models import Account, DEFAULT_RATE_LIMIT
 from .crypto import decrypt_dict, encrypt_dict, get_or_create_fernet
 
+# alias 会进入文件系统路径（Chrome Profile、QR 截图）与日志——只允许安全字符
+ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
 
 def create_account(
     session: Session, platform: str, alias: str, creds: dict | None = None,
     rate_limit: dict | None = None, cdp_port: int | None = None, proxy: str | None = None,
 ) -> Account:
     adapter = get_adapter(platform)  # 未知平台直接抛错
+    if not ALIAS_RE.match(alias or ""):
+        # 防路径穿越/日志注入：alias 进 Chrome Profile 目录名与 QR 文件名
+        raise ValueError(f"alias 仅限字母数字与 _ . -（≤64 字符，字母开头），got: {alias!r}")
     exists = session.execute(
         select(Account).where(Account.platform == platform, Account.alias == alias)
     ).scalar_one_or_none()

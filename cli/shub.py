@@ -298,7 +298,7 @@ def fanout(
         for item in skipped:
             typer.secho(f"skip {item['platform']}: {item['reason']}", fg=typer.colors.YELLOW)
         if not rows:
-            _err(ValueError("no task enqueued (无任何平台有可用账号)"))
+            raise ValueError("no task enqueued (无任何平台有可用账号)")
     except Exception as e:
         _err(e)
 
@@ -340,7 +340,7 @@ def canary(
             typer.echo("selectors:")
             handle, page = adapter._open(ctx, adapter.publish_url)
             try:
-                for name in adapter.selectors:
+                for name in adapter.selector_names():
                     mark = "HIT " if adapter.has(page, name) else "MISS"
                     typer.echo(f"  [{mark}] {name} = {adapter.selectors[name]}")
             finally:
@@ -379,11 +379,12 @@ def doctor(
         handle, page = adapter._open(ctx, adapter.publish_url)
         try:
             hit = 0
-            for name in adapter.selectors:
+            names = adapter.selector_names()
+            for name in names:
                 ok = adapter.has(page, name)
                 hit += ok
                 typer.echo(f"[{'HIT' if ok else 'MISS'}] {name:<16} {adapter.selectors[name]}")
-            typer.echo(f"summary: {hit}/{len(adapter.selectors)} hit")
+            typer.echo(f"summary: {hit}/{len(names)} hit")
         finally:
             handle.close()
     except Exception as e:

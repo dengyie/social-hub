@@ -191,3 +191,13 @@ def test_create_draft_rejects_unknown_platform(env):
     with session() as s:
         with pytest.raises(ValueError, match="unknown platform"):
             create_draft(s, title="t", platform="typo-platform")
+
+
+def test_account_alias_charset_guard(env):
+    """R2 回归：alias 进文件系统路径（Profile/QR）——拒绝穿越与非法字符，合法放行。"""
+    with session() as s:
+        with pytest.raises(ValueError, match="alias"):
+            create_account(s, "mock", "../evil", {})
+        with pytest.raises(ValueError, match="alias"):
+            create_account(s, "mock", "a b", {})
+        create_account(s, "mock", "ok.name-1", {})  # 合法字符放行

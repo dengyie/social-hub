@@ -115,7 +115,6 @@ def enqueue_fanout(session: Session, draft_id: int, scheduled_at=None) -> tuple[
     from sqlalchemy import select
 
     from ..models import Account, DraftVariant
-    from ..vault.service import get_account
 
     variants = list(session.execute(
         select(DraftVariant).where(DraftVariant.draft_id == draft_id, DraftVariant.status == "ready")

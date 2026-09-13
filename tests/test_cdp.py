@@ -297,6 +297,55 @@ def test_fleet_playwright_driver_reused(env, monkeypatch):
     assert starts["n"] == 1
 
 
+def test_fleet_playwright_start_race_single_driver(env, monkeypatch):
+    """R2 回归：多 worker 线程并发首连，双检锁保证只 start 一个 driver。"""
+    import sys
+    import threading
+    import time
+    import types
+
+    from social_hub.core import fleet as fleet_mod
+
+    starts = {"n": 0}
+
+    class FakePw:
+        class chromium:
+            @staticmethod
+            def connect_over_cdp(url, timeout=0):
+                return FakeBrowser("<html></html>")
+
+    def fake_sync_playwright():
+        starts["n"] += 1
+        time.sleep(0.2)  # 放大竞态窗口：无锁时第二线程必然也进入 start
+        return SimpleNamespace(start=lambda: FakePw())
+
+    fake_sync_api = types.ModuleType("playwright.sync_api")
+    fake_sync_api.sync_playwright = fake_sync_playwright
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    fleet_mod.reset_playwright()
+    fleet_mod.reset_fleet()
+    fleet_mod._fleet = fleet_mod.ChromeFleet(prober=lambda port: {"ok": 1})
+    account = SimpleNamespace(cdp_port=9311, chrome_profile="/tmp/p2", platform="xhs", alias="a")
+
+    results: list = []
+
+    def worker():
+        try:
+            fleet_mod._fleet.ensure(account).close()
+            results.append("ok")
+        except Exception as e:  # pragma: no cover  仅在实现退化时触发
+            results.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(15)
+    assert results == ["ok", "ok"]
+    assert starts["n"] == 1
+
+
 def test_login_redirect_marker_reports_expired(make_task):
     """login_redirect_marker（xhs /login 跳转）→ check_login=expired。"""
     from social_hub.adapters.registry import get_adapter
@@ -412,3 +461,16 @@ def test_login_interactive_saves_qr(make_task, cdp_env, monkeypatch):
     qr = get_settings().data_dir / "qr" / "xhs-qracc.png"
     assert out["qr_path"] == str(qr)
     assert qr.read_bytes() == b"png-bytes"
+
+
+def test_cli_doctor_skips_text_keys(make_task, cdp_env):
+    """doctor 只探测 CSS 选择器键，`*_text` 文案目标不得进入探测（真机 playwright 会炸）。"""
+    from cli.shub import app
+    from typer.testing import CliRunner
+
+    cdp_env.calls["html"] = XHS_REAL_HTML
+    _cdp_ctx(make_task, "xhs", XHS_REAL_HTML, alias="docx", cover=True, port_offset=97)
+    r = CliRunner().invoke(app, ["doctor", "--platform", "xhs"])
+    assert r.exit_code == 0, r.output
+    assert "image_tab_text" not in r.output
+    assert "summary:" in r.output

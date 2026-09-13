@@ -51,6 +51,10 @@ class CdpAdapterBase(PlatformAdapter):
         return load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
 
     # ---- 选择器原语（playwright Page 与测试 FakePage 同构）----
+    def selector_names(self) -> list[str]:
+        """可被 CSS 探测的选择器键（doctor/canary 用）；`*_text` 是文案目标不是选择器。"""
+        return [k for k in self.selectors if not k.endswith("_text")]
+
     def _sel(self, name: str) -> str:
         sel = self.selectors.get(name)
         if not sel:

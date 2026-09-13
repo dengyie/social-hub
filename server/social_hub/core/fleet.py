@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ class ChromeLaunch:
 
 
 _playwright_cm = None  # playwright driver 生命周期 = daemon 生命周期（与 Chrome 同级，不主动 stop）
+_pw_lock = threading.Lock()  # 多 worker 线程并发首连时防止双 driver（review R2）
 
 
 def _get_playwright():
@@ -65,10 +67,12 @@ def _get_playwright():
     每发一篇泄漏一个进程（review P1）。driver 与被附着的 Chrome 同为常驻资源。
     """
     global _playwright_cm
-    if _playwright_cm is None:
-        from playwright.sync_api import sync_playwright  # 延迟导入：API 通道零浏览器依赖
+    if _playwright_cm is None:  # 快路径
+        with _pw_lock:
+            if _playwright_cm is None:  # 双检：workers>1 时并发首连
+                from playwright.sync_api import sync_playwright  # 延迟导入：API 通道零浏览器依赖
 
-        _playwright_cm = sync_playwright().start()
+                _playwright_cm = sync_playwright().start()
     return _playwright_cm
 
 
