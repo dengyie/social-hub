@@ -25,7 +25,7 @@ class CsdnAdapter(CdpAdapterBase):
         "title_input": "input[placeholder*='标题']",
         "body_editor": ".cm-content[contenteditable='true']",
     }
-    login_markers = ("text:登录",)  # [calibrate] 过宽，配合 URL 重定向使用
+    login_markers = ()  # 登录判定走 login_redirect_marker（passport.csdn.net）；页内"登录"文案误报率过高
     captcha_markers = ()
 
     def _flow(self, page, snap: dict, ctx) -> dict:

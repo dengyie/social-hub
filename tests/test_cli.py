@@ -95,3 +95,53 @@ def test_serve_deny_by_default(env, monkeypatch):
 
     r = runner.invoke(app, ["serve"])  # loopback 无 token 允许（本机调试默认）
     assert r.exit_code == 0, _output(r)
+
+
+def test_cli_fanout_and_replay(env):
+    """fanout CLI：入队 + 幂等重放同 task id；无账号平台被 skip。"""
+    from social_hub.content.draft_service import create_draft
+    from social_hub.db import session
+    from social_hub.models import DraftVariant
+    from social_hub.vault.service import create_account
+
+    with session() as s:
+        create_account(s, "mock", "demo", {})
+        d = create_draft(s, title="扇出", platform="mock")
+        s.add(DraftVariant(draft_id=d.id, platform="juejin", title="扇出", body=""))
+        s.commit()
+        did = d.id
+
+    r = runner.invoke(app, ["fanout", "--draft", str(did)])
+    assert r.exit_code == 0, _output(r)
+    assert "task #1 mock queued" in _output(r)
+    assert "skip juejin" in _output(r)
+
+    r2 = runner.invoke(app, ["fanout", "--draft", str(did)])
+    assert r2.exit_code == 0, _output(r2)
+    assert "task #1 mock queued" in _output(r2)  # 幂等：同 task id
+
+
+def test_cli_fanout_no_account_fails(env):
+    from social_hub.content.draft_service import create_draft
+    from social_hub.db import session
+
+    with session() as s:
+        d = create_draft(s, title="无人", platform="mock")
+        did = d.id
+    r = runner.invoke(app, ["fanout", "--draft", str(did)])
+    assert r.exit_code == 1
+    assert "no task enqueued" in _output(r)
+
+
+def test_cli_canary_mock(env):
+    runner.invoke(app, ["account", "add", "mock", "demo", "--var", "token=x"])
+    r = runner.invoke(app, ["canary", "--platform", "mock"])
+    assert r.exit_code == 0, _output(r)
+    assert "login: ok" in _output(r)
+
+
+def test_cli_doctor_rejects_api_lane(env):
+    runner.invoke(app, ["account", "add", "mock", "demo", "--var", "token=x"])
+    r = runner.invoke(app, ["doctor", "--platform", "mock"])
+    assert r.exit_code == 1
+    assert "不是 CDP" in _output(r)

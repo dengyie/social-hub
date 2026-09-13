@@ -12,7 +12,6 @@ from pathlib import Path
 from ..base import (
     ActionContext,
     Capabilities,
-    CredentialsError,
     Evidence,
     NeedsLoginError,
     PermanentError,
@@ -35,22 +34,9 @@ class BiliAdapter(PlatformAdapter):
         return BiliClient(settings.data_dir / "bili", binary=settings.biliup_bin)
 
     def _validated_snapshot(self, ctx: ActionContext) -> dict:
-        payload = json.loads(ctx.task.payload or "{}")
-        variant_id = payload.get("variant_id")
-        if not variant_id:
-            raise PermanentError("task payload missing variant_id")
-        from ...models import DraftVariant
+        from ..base import load_variant_snapshot
 
-        with ctx.db() as session:
-            variant = session.get(DraftVariant, variant_id)
-            if variant is None:
-                raise PermanentError(f"variant #{variant_id} not found")
-            snap = {"title": variant.title, "body": variant.body, "tags": variant.tags}
-        if len(snap["title"]) > self.capabilities.max_title:
-            raise PermanentError(
-                f"title too long for bili ({len(snap['title'])} > {self.capabilities.max_title})"
-            )
-        return snap
+        return load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
 
     def check_login(self, ctx: ActionContext) -> str:
         state = self._client().check_login()
@@ -64,12 +50,15 @@ class BiliAdapter(PlatformAdapter):
         prior = json.loads(ctx.task.evidence or "{}")
         bvid = prior.get("bvid")
         if not bvid:
-            video = prior.get("video_path") or ""
+            video = prior.get("video_path")
             if not video:
-                # B站投稿必须有视频文件：约定 media 即视频（kind=video），取其绝对路径
-                video = self._resolve_video(ctx)
-                if not video:
+                if not snap["cover_path"]:
                     raise PermanentError("bili 投稿需要视频文件（media kind=video）")
+                if snap["cover_kind"] != "video":
+                    raise PermanentError(
+                        f"bili 需要 kind=video 的媒体，got kind={snap['cover_kind']}"
+                    )
+                video = snap["cover_path"]
                 self._merge(ctx, {"video_path": video})  # 断点一：文件路径先落盘
             client = self._client()
             if client.check_login() != "ok":
@@ -96,26 +85,6 @@ class BiliAdapter(PlatformAdapter):
         ctx.task.evidence = json.dumps(data, ensure_ascii=False)
         if ctx.session is not None:
             ctx.session.commit()
-
-    @staticmethod
-    def _resolve_video(ctx: ActionContext) -> str:
-        """从任务变体的 cover_media_id 找视频绝对路径（M2 约定：variant.video_media_id 待扩展，
-        先复用 cover 字段承载视频 media id——媒体 kind 校验防呆）。"""
-        payload = json.loads(ctx.task.payload or "{}")
-        from ...config import get_settings
-        from ...models import Media
-
-        variant_id = payload.get("variant_id")
-        with ctx.db() as session:
-            from ...models import DraftVariant
-
-            variant = session.get(DraftVariant, variant_id)
-            media = session.get(Media, variant.cover_media_id) if variant and variant.cover_media_id else None
-            if media is None:
-                return ""
-            if media.kind != "video":
-                raise PermanentError(f"bili 需要 kind=video 的媒体，got kind={media.kind}")
-            return str(get_settings().media_dir / media.path)
 
 
 register(BiliAdapter())

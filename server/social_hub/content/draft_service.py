@@ -23,6 +23,11 @@ def create_draft(
 ) -> Draft:
     if not (title or "").strip():
         raise ValueError("title is required")
+    if platform:
+        # 入口即校验：否则 typo 平台变体会存进库，发布时才以 500 爆雷（review P2）
+        from ..adapters.registry import get_adapter
+
+        get_adapter(platform)
     d = Draft(
         title=title.strip(),
         body=body or "",

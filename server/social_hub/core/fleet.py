@@ -16,7 +16,6 @@ import urllib.request
 from dataclasses import dataclass
 
 from ..config import get_settings
-from .state import utcnow  # noqa: F401  保持模块依赖形状一致
 
 MIN_CDP_PORT = 9300  # 9222 属于 daily-checkin，禁碰
 
@@ -56,6 +55,33 @@ class ChromeLaunch:
     profile: str
 
 
+_playwright_cm = None  # playwright driver 生命周期 = daemon 生命周期（与 Chrome 同级，不主动 stop）
+
+
+def _get_playwright():
+    """playwright driver 单例：每进程只 start 一次。
+
+    此前在 _connect 内逐任务 start()——node driver 子进程从不回收，daemon 长跑
+    每发一篇泄漏一个进程（review P1）。driver 与被附着的 Chrome 同为常驻资源。
+    """
+    global _playwright_cm
+    if _playwright_cm is None:
+        from playwright.sync_api import sync_playwright  # 延迟导入：API 通道零浏览器依赖
+
+        _playwright_cm = sync_playwright().start()
+    return _playwright_cm
+
+
+def reset_playwright() -> None:  # 测试用
+    global _playwright_cm
+    if _playwright_cm is not None:
+        try:
+            _playwright_cm.stop()
+        except Exception:
+            pass
+    _playwright_cm = None
+
+
 class ChromeFleet:
     """舰队：ensure(account) → 已连接的 Browser 句柄。可注入 connector/prober 便于测试。"""
 
@@ -90,7 +116,7 @@ class ChromeFleet:
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-session-crashed-bubble",
-            f"--window-size=1440,960",
+            "--window-size=1440,960",
         ]
         # 只 Popen，不等待、不杀：进程退出/清理由人管理（红线）
         if self._launcher is not None:
@@ -108,10 +134,7 @@ class ChromeFleet:
         if self._connector is not None:
             browser = self._connector(f"http://127.0.0.1:{port}")
         else:
-            from playwright.sync_api import sync_playwright  # 延迟导入：API 通道零浏览器依赖
-
-            pw = sync_playwright().start()
-            browser = pw.chromium.connect_over_cdp(
+            browser = _get_playwright().chromium.connect_over_cdp(
                 f"http://127.0.0.1:{port}", timeout=get_settings().cdp_connect_timeout * 1000
             )
         return CdpBrowserHandle(browser, port)

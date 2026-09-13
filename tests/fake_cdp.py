@@ -28,11 +28,34 @@ class FakeElement:
         return self.tag.get_text(strip=True)
 
     def click(self) -> None:
-        self._page.actions.append(("click", self._sel))
+        self._page.actions.append(("click", self._sel, self.inner_text()))
         self._page._last_clicked = self._sel
 
     def set_input_files(self, paths) -> None:
         self._page.actions.append(("upload", self._sel, tuple(paths)))
+
+
+class FakeTextLocator:
+    """playwright `text=` 引擎等价件：全文档规范化子串匹配，count() 一次判定。"""
+
+    def __init__(self, page: "FakePage", needle: str):
+        self._page = page
+        self._needle = needle
+
+    def count(self) -> int:
+        for tag in self._page.soup.find_all(True):
+            if self._needle in "".join(tag.get_text().split()):
+                return 1
+        return 0
+
+
+class FakeCssLocator:
+    def __init__(self, page: "FakePage", sel: str):
+        self._page = page
+        self._sel = sel
+
+    def count(self) -> int:
+        return len(self._page.soup.select(self._sel))
 
 
 class FakePage:
@@ -55,6 +78,11 @@ class FakePage:
     def query_selector_all(self, sel: str):
         return [FakeElement(t, sel, self) for t in self.soup.select(sel)]
 
+    def locator(self, selector: str):
+        if selector.startswith("text="):
+            return FakeTextLocator(self, selector[5:])
+        return FakeCssLocator(self, selector)
+
     def fill(self, sel: str, text: str) -> None:
         self.actions.append(("fill", sel, text))
 
@@ -71,12 +99,13 @@ class FakePage:
 
 
 class FakeContext:
-    def __init__(self, html: str):
+    def __init__(self, html: str, page_cls=None):
         self._html = html
+        self._page_cls = page_cls or FakePage
         self.pages: list[FakePage] = []
 
     def new_page(self) -> FakePage:
-        p = FakePage(self._html)
+        p = self._page_cls(self._html)
         self.pages.append(p)
         return p
 
@@ -84,8 +113,8 @@ class FakeContext:
 class FakeBrowser:
     """Fleet connector 注入件：page() 语义由 CdpBrowserHandle 使用。"""
 
-    def __init__(self, html: str):
-        self.contexts = [FakeContext(html)]
+    def __init__(self, html: str, page_cls=None):
+        self.contexts = [FakeContext(html, page_cls=page_cls)]
         self.disconnected = False
         self.close_called = False
 

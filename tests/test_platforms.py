@@ -171,3 +171,23 @@ def test_enqueue_publish_idempotent_still_works(env):
         t2 = enqueue_publish(s, d.id, "mock", "demo")
         s.commit()
         assert t1.id == t2.id
+
+
+def test_unknown_platform_value_error_not_keyerror(env):
+    """review P2 回归：未知平台统一 ValueError（endpoint 400 语义），不是 KeyError。"""
+    from social_hub.adapters.registry import get_adapter
+
+    with pytest.raises(ValueError, match="unknown platform"):
+        get_adapter("typo-platform")
+    with session() as s:
+        create_account(s, "mock", "demo", {})
+        d = create_draft(s, title="t", platform="mock")
+        with pytest.raises(ValueError, match="unknown platform"):
+            enqueue_publish(s, d.id, "typo-platform", "demo")
+
+
+def test_create_draft_rejects_unknown_platform(env):
+    """入口即校验：typo 平台不能进库（否则发布时 500）。"""
+    with session() as s:
+        with pytest.raises(ValueError, match="unknown platform"):
+            create_draft(s, title="t", platform="typo-platform")

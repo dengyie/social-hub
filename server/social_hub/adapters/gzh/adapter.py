@@ -53,30 +53,12 @@ class GzhAdapter(PlatformAdapter):
         return GzhClient(creds.get("app_id", ""), creds.get("app_secret", ""))
 
     def _load_variant(self, ctx: ActionContext):
-        import json
+        from ..base import load_variant_snapshot
 
-        from ...models import DraftVariant, Media
-
-        payload = json.loads(ctx.task.payload or "{}")
-        variant_id = payload.get("variant_id")
-        if not variant_id:
-            raise PermanentError("task payload missing variant_id")
-        with ctx.db() as session:
-            variant = session.get(DraftVariant, variant_id)
-            if variant is None:
-                raise PermanentError(f"variant #{variant_id} not found")
-            cover = session.get(Media, variant.cover_media_id) if variant.cover_media_id else None
-            cover_path = str(ctx.media_dir / cover.path) if cover else None
-            # 脱离 session 快照，避免连接长期占用
-            snapshot = {
-                "id": variant.id,
-                "title": variant.title,
-                "body": variant.body,
-                "author": variant.draft.author,
-                "digest": variant.draft.digest,
-                "cover_path": cover_path,
-            }
-        return snapshot
+        snap = load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
+        if not snap["cover_path"]:
+            raise PermanentError("gzh draft requires a cover (thumb_media_id)")
+        return snap
 
     def check_login(self, ctx: ActionContext) -> str:
         client = self._client(ctx)

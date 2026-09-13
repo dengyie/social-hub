@@ -89,6 +89,41 @@ class ActionContext:
         return self.session_factory()
 
 
+def load_variant_snapshot(ctx: ActionContext, *, max_title: int | None = None) -> dict:
+    """变体快照唯一实现（此前 gzh/bili/juejin/cdp-base 各持一份拷贝）。
+
+    payload→variant→字段快照，脱离 session 返回；标题上限可选（适配器能力驱动）。
+    返回字段：id/title/body/tags/author/digest/cover_path/cover_kind。
+    """
+    import json
+
+    from ..models import DraftVariant, Media
+
+    payload = json.loads(ctx.task.payload or "{}")
+    variant_id = payload.get("variant_id")
+    if not variant_id:
+        raise PermanentError("task payload missing variant_id")
+    with ctx.db() as session:
+        variant = session.get(DraftVariant, variant_id)
+        if variant is None:
+            raise PermanentError(f"variant #{variant_id} not found")
+        media = session.get(Media, variant.cover_media_id) if variant.cover_media_id else None
+        draft = variant.draft
+        snap = {
+            "id": variant.id,
+            "title": variant.title,
+            "body": variant.body,
+            "tags": variant.tags,
+            "author": draft.author if draft else None,
+            "digest": draft.digest if draft else None,
+            "cover_path": str(ctx.media_dir / media.path) if media else None,
+            "cover_kind": media.kind if media else None,
+        }
+    if max_title is not None and len(snap["title"]) > max_title:
+        raise PermanentError(f"title too long ({len(snap['title'])} > {max_title})")
+    return snap
+
+
 class PlatformAdapter(ABC):
     platform: str = ""
     lane: str = "api"  # api | cdp

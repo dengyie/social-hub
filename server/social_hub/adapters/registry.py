@@ -15,10 +15,11 @@ def register(adapter: PlatformAdapter) -> PlatformAdapter:
 
 
 def get_adapter(platform: str) -> PlatformAdapter:
+    """未知平台统一抛 ValueError（调用方 400 语义），不泄漏 dict 访问语义的 KeyError。"""
     try:
         return PLATFORMS[platform]
     except KeyError:
-        raise KeyError(f"unknown platform: {platform} (registered: {sorted(PLATFORMS)})") from None
+        raise ValueError(f"unknown platform: {platform} (registered: {sorted(PLATFORMS)})") from None
 
 
 def registered_platforms() -> list[str]:

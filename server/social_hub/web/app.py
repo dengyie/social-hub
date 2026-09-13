@@ -180,7 +180,7 @@ def create_app() -> FastAPI:
                                      rate_limit=body.rate_limit, cdp_port=body.cdp_port, proxy=body.proxy)
                 aid, lane = acc.id, acc.lane
                 session.commit()
-            except (ValueError, KeyError) as e:
+            except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
         return {"id": aid, "platform": body.platform, "alias": body.alias, "lane": lane}
 

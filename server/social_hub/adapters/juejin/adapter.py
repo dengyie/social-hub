@@ -32,22 +32,9 @@ class JuejinAdapter(PlatformAdapter):
         return JuejinClient(creds.get("cookie", ""))
 
     def _validated_snapshot(self, ctx: ActionContext) -> dict:
-        payload = json.loads(ctx.task.payload or "{}")
-        variant_id = payload.get("variant_id")
-        if not variant_id:
-            raise PermanentError("task payload missing variant_id")
-        from ...models import DraftVariant
+        from ..base import load_variant_snapshot
 
-        with ctx.db() as session:
-            variant = session.get(DraftVariant, variant_id)
-            if variant is None:
-                raise PermanentError(f"variant #{variant_id} not found")
-            snap = {"title": variant.title, "body": variant.body, "tags": variant.tags}
-        if len(snap["title"]) > self.capabilities.max_title:
-            raise PermanentError(
-                f"title too long for juejin ({len(snap['title'])} > {self.capabilities.max_title})"
-            )
-        return snap
+        return load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
 
     def check_login(self, ctx: ActionContext) -> str:
         client = self._client(ctx)

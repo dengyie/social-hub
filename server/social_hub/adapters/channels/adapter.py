@@ -14,9 +14,12 @@ from ..cdp.base import CdpAdapterBase
 class ChannelsAdapter(CdpAdapterBase):
     platform = "channels"
     lane = "cdp"
+    # [calibrate] SAU 对「短标题」从严 7~15 字；desc 上限与标题字段映射待真机定，
+    # 当前按描述口径放 30，校准时收
     capabilities = Capabilities(image_text=True, video=True, markdown=False, max_title=30, verifiable=False)
     login_url = "https://channels.weixin.qq.com/platform/login"
-    publish_url = "https://channels.weixin.qq.com/platform/post/content"
+    # social-auto-upload tencent_uploader：TENCENT_UPLOAD_URL = /platform/post/create
+    publish_url = "https://channels.weixin.qq.com/platform/post/create"
     publish_button_text = "发表"
 
     selectors = {

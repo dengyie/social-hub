@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from ..base import (
     ActionContext,
@@ -20,6 +21,7 @@ from ..base import (
     NeedsLoginError,
     PermanentError,
     PlatformAdapter,
+    TransientError,
 )
 
 
@@ -29,6 +31,8 @@ class CdpAdapterBase(PlatformAdapter):
     publish_url: str = ""  # 创作者中心发布页
     publish_button_text: str = "发布"  # 发布按钮可见文案（比 class 稳定）
     confirm_button_text: str = ""  # 发布后确认弹窗（如快手 ant-modal「确认」），空=无
+    confirm_wait_seconds: float = 10.0  # 确认弹窗有界等待
+    confirm_poll_interval: float = 0.5
     login_redirect_marker: str = ""  # 未登录时 URL 会跳到该子串（如 "/login"、"passport."）
     # 平台选择器注册表（子类覆写）。标注 [calibrate] 的键为待真机校准项；
     # 来源标注：XiaohongshuSkills（2026-03 真机验证）/ social-auto-upload / 预置待校准。
@@ -42,29 +46,9 @@ class CdpAdapterBase(PlatformAdapter):
 
     # ---- 参数校验（浏览器无关，契约测试直测）----
     def _validated_snapshot(self, ctx: ActionContext) -> dict:
-        payload = json.loads(ctx.task.payload or "{}")
-        variant_id = payload.get("variant_id")
-        if not variant_id:
-            raise PermanentError("task payload missing variant_id")
-        from ...models import DraftVariant, Media
+        from ..base import load_variant_snapshot
 
-        with ctx.db() as session:
-            variant = session.get(DraftVariant, variant_id)
-            if variant is None:
-                raise PermanentError(f"variant #{variant_id} not found")
-            cover = session.get(Media, variant.cover_media_id) if variant.cover_media_id else None
-            snapshot = {
-                "id": variant.id,
-                "title": variant.title,
-                "body": variant.body,
-                "tags": variant.tags,
-                "cover_path": str(ctx.media_dir / cover.path) if cover else None,
-            }
-        if len(snapshot["title"]) > self.capabilities.max_title:
-            raise PermanentError(
-                f"title too long for {self.platform} ({len(snapshot['title'])} > {self.capabilities.max_title})"
-            )
-        return snapshot
+        return load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
 
     # ---- 选择器原语（playwright Page 与测试 FakePage 同构）----
     def _sel(self, name: str) -> str:
@@ -75,11 +59,9 @@ class CdpAdapterBase(PlatformAdapter):
 
     def _marker_hit(self, page, marker: str) -> bool:
         if marker.startswith("text:"):
-            needle = marker[5:]
-            for el in page.query_selector_all("button, div, span, p, a"):
-                if needle in "".join((el.inner_text() or "").split()):
-                    return True
-            return False
+            # playwright text= 引擎一次往返完成子串匹配；此前逐元素 inner_text
+            # 在真实页面是 O(元素数) 次 CDP 往返（review P2）
+            return page.locator(f"text={marker[5:]}").count() > 0
         return page.query_selector(marker) is not None
 
     def _guard(self, page) -> None:
@@ -130,10 +112,24 @@ class CdpAdapterBase(PlatformAdapter):
         else:
             self.click_button_by_text(page, self.publish_button_text)
         if self.confirm_button_text:
+            self._wait_and_click_confirm(page)
+
+    def _wait_and_click_confirm(self, page) -> None:
+        """确认弹窗是发布后的异步出现（如快手视频处理中）：有界轮询。
+
+        超时抛 TransientError——此时回执尚未落盘，退避重跑安全（重新走 flow）。
+        """
+        deadline = time.monotonic() + self.confirm_wait_seconds
+        while True:
             for el in page.query_selector_all("button, [role=button]"):
                 if self.confirm_button_text in "".join((el.inner_text() or "").split()):
                     el.click()
-                    break
+                    return
+            if time.monotonic() >= deadline:
+                raise TransientError(
+                    f"{self.platform}: confirm '{self.confirm_button_text}' not shown "
+                    f"within {self.confirm_wait_seconds}s")
+            time.sleep(self.confirm_poll_interval)
 
     def upload(self, page, name: str, paths: list[str]) -> None:
         page.set_input_files(self._sel(name), paths)
@@ -143,8 +139,12 @@ class CdpAdapterBase(PlatformAdapter):
         from ...core.fleet import get_fleet
 
         handle = get_fleet().ensure(ctx.account)
-        page = handle.page(url)
-        self._guard(page)
+        try:
+            page = handle.page(url)
+            self._guard(page)
+        except Exception:
+            handle.close()  # 资源获取与释放对称：goto 超时/拦截也要断开连接
+            raise
         return handle, page
 
     def check_login(self, ctx: ActionContext) -> str:
@@ -157,16 +157,29 @@ class CdpAdapterBase(PlatformAdapter):
         return "ok"
 
     def login_interactive(self, ctx: ActionContext) -> dict:
-        """打开登录页并截图（含二维码）；人工扫码后重跑任务。远端场景把 base64 推到 WebUI。"""
+        """打开登录页截图落盘（含二维码）；人工扫码后重跑任务。远端把 qr_path 推给用户。
+
+        注意：登录页本身就是「未登录态」，**不走 _open**（guard 会误拦），
+        只开页面不判拦截。
+        """
         if not self.login_url:
             raise PermanentError(f"{self.platform}: login_url not configured")
-        handle, page = self._open(ctx, self.login_url)
+        from ...core.fleet import get_fleet
+        from ...config import get_settings
+
+        handle = get_fleet().ensure(ctx.account)
         try:
-            b64 = page.screenshot()
-        except Exception:
-            b64 = b""
-        return {"note": "scan the QR in the attached browser window, then requeue the task",
-                "screenshot_bytes": len(b64 or b""), "qr_available": bool(b64)}
+            page = handle.page(self.login_url)
+            png = page.screenshot() or b""
+        finally:
+            handle.close()
+        qr_dir = get_settings().data_dir / "qr"
+        qr_dir.mkdir(parents=True, exist_ok=True)
+        qr_path = qr_dir / f"{self.platform}-{ctx.account.alias}.png"
+        if png:
+            qr_path.write_bytes(png)
+        return {"qr_path": str(qr_path) if png else None,
+                "note": "scan the QR in the attached browser window (or qr_path), then requeue the task"}
 
     # ---- 发布主链路（模板方法）----
     def _commit_receipt(self, ctx: ActionContext, receipt: dict) -> None:
