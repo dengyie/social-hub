@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     workers: int = 1
     port: int = 8767
     max_retries: int = 3
+    chrome_bin: str = ""  # 空 = 自动探测（CDP 通道）
+    biliup_bin: str = "biliup-rs"  # B站通道外部二进制（仅个人使用，禁商用，见设计文档 §2）
+    cdp_connect_timeout: int = 15
 
     @property
     def db_path(self) -> Path:

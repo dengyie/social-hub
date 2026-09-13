@@ -106,6 +106,39 @@ def enqueue_publish(session: Session, draft_id: int, platform: str, account_alia
     return task
 
 
+def enqueue_fanout(session: Session, draft_id: int, scheduled_at=None) -> tuple[list[AutomationTask], list[dict]]:
+    """一键全平台扇出（设计文档 §8.4）：草稿的每个 ready 变体 × 该平台 active 账号入队。
+
+    单平台无账号 → 记入 skipped，不拖垮整波；幂等：变体已有活跃任务则复用。
+    返回 (tasks, skipped)，skipped = [{"platform": ..., "reason": ...}]。
+    """
+    from sqlalchemy import select
+
+    from ..models import Account, DraftVariant
+    from ..vault.service import get_account
+
+    variants = list(session.execute(
+        select(DraftVariant).where(DraftVariant.draft_id == draft_id, DraftVariant.status == "ready")
+    ).scalars())
+    if not variants:
+        raise ValueError(f"draft #{draft_id} has no ready variants")
+    tasks: list[AutomationTask] = []
+    skipped: list[dict] = []
+    for v in variants:
+        account = session.execute(
+            select(Account).where(Account.platform == v.platform, Account.status == "active")
+            .order_by(Account.id)
+        ).scalars().first()
+        if account is None:
+            skipped.append({"platform": v.platform, "reason": "no active account"})
+            continue
+        try:
+            tasks.append(enqueue_publish(session, draft_id, v.platform, account.alias, scheduled_at))
+        except ValueError as e:
+            skipped.append({"platform": v.platform, "reason": str(e)})
+    return tasks, skipped
+
+
 def requeue_task(session: Session, task_id: int) -> AutomationTask:
     """人工重排（needs_login/failed/captcha_wait → queued），清空终态字段。"""
     task = session.get(AutomationTask, task_id)

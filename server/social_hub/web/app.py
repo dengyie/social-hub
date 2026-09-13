@@ -24,7 +24,7 @@ from ..config import get_settings
 from ..core.orchestrator import Orchestrator
 from ..core.scheduler import HubScheduler
 from ..core.state import TERMINAL, utcnow
-from ..core.taskops import enqueue_publish, requeue_task
+from ..core.taskops import enqueue_fanout, enqueue_publish, requeue_task
 from ..content.draft_service import create_draft
 from ..db import get_session_factory, init_db
 from ..media.service import ingest
@@ -101,6 +101,11 @@ class PublishIn(BaseModel):
     draft_id: int
     platform: str
     account_alias: str
+    scheduled_at: str | None = None  # ISO8601（naive UTC）
+
+
+class FanoutIn(BaseModel):
+    draft_id: int
     scheduled_at: str | None = None  # ISO8601（naive UTC）
 
 
@@ -251,6 +256,24 @@ def create_app() -> FastAPI:
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
         return {"task_id": tid, "status": status}
+
+    @app.post("/api/v1/publish/fanout", status_code=201, dependencies=[Depends(require_auth)])
+    def publish_fanout(body: FanoutIn):
+        """一键全平台：草稿每个 ready 变体 × 该平台 active 账号（§8.4）。"""
+        scheduled = None
+        if body.scheduled_at:
+            try:
+                scheduled = datetime.fromisoformat(body.scheduled_at)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="scheduled_at must be ISO8601")
+        with get_session_factory()() as session:
+            try:
+                tasks, skipped = enqueue_fanout(session, body.draft_id, scheduled)
+                out = [{"task_id": t.id, "platform": t.platform, "status": t.status} for t in tasks]
+                session.commit()
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        return {"tasks": out, "skipped": skipped}
 
     @app.get("/api/v1/tasks", dependencies=[Depends(require_auth)])
     def get_tasks(status: str | None = Query(default=None), limit: int = Query(default=100, le=500)):

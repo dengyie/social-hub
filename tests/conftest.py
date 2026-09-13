@@ -36,7 +36,8 @@ def make_task(env):
     """工厂：建账号+媒体+草稿变体+任务（不入队执行），返回 ctx 与句柄。"""
 
     def _make(platform: str = "mock", alias: str = "demo", title: str = "hello social-hub",
-             body: str = "<p>hi</p>", cover: bool = False, creds: dict | None = None):
+             body: str = "<p>hi</p>", cover: bool = False, creds: dict | None = None,
+             cdp_port: int | None = None):
         from social_hub.content.draft_service import create_draft
         from social_hub.core.taskops import enqueue_publish
         from social_hub.db import session
@@ -45,7 +46,7 @@ def make_task(env):
         from social_hub.vault.service import create_account, get_account
 
         with session() as s:
-            create_account(s, platform, alias, creds or {"token": "demo"})
+            create_account(s, platform, alias, creds or {"token": "demo"}, cdp_port=cdp_port)
             cover_id = None
             if cover:
                 f = env.media_dir / "seed-cover.jpg"

@@ -277,6 +277,119 @@ def task_requeue(task_id: int):
         _err(e)
 
 
+# ---------- fanout / canary ----------
+@app.command("fanout")
+def fanout(
+    draft: int = typer.Option(..., "--draft", help="draft id"),
+    at: str = typer.Option(None, "--at", help="ISO8601 定时（naive UTC）"),
+):
+    """一键全平台：草稿每个 ready 变体 × 该平台 active 账号（§8.4）。"""
+    try:
+        _init()
+        from social_hub.core.taskops import enqueue_fanout
+        from social_hub.db import session
+
+        with session() as s:
+            tasks, skipped = enqueue_fanout(s, draft, _parse_dt(at))
+            rows = [(t.id, t.platform, t.status) for t in tasks]
+            s.commit()
+        for tid, platform, status in rows:
+            typer.echo(f"task #{tid} {platform} {status}")
+        for item in skipped:
+            typer.secho(f"skip {item['platform']}: {item['reason']}", fg=typer.colors.YELLOW)
+        if not rows:
+            _err(ValueError("no task enqueued (无任何平台有可用账号)"))
+    except Exception as e:
+        _err(e)
+
+
+@app.command()
+def canary(
+    platform: str = typer.Option(..., "--platform"),
+    account: str = typer.Option(None, "--account", help="账号 alias（默认该平台第一个）"),
+):
+    """金丝雀：登录态 + （CDP）选择器预检，不发任何内容（§6.9）。"""
+    try:
+        _init()
+        from sqlalchemy import select
+
+        from social_hub.adapters.base import ActionContext
+        from social_hub.adapters.cdp.base import CdpAdapterBase
+        from social_hub.adapters.registry import get_adapter
+        from social_hub.config import get_settings
+        from social_hub.db import session
+        from social_hub.models import Account
+        from social_hub.vault.service import get_account as get_acc
+
+        adapter = get_adapter(platform)
+        with session() as s:
+            if account:
+                acc = get_acc(s, platform, account)
+            else:
+                acc = s.execute(select(Account).where(
+                    Account.platform == platform, Account.status == "active")
+                    .order_by(Account.id)).scalars().first()
+            if acc is None:
+                raise ValueError(f"no active account for {platform}")
+            ctx = ActionContext(task=None, account=acc, session_factory=None,
+                                media_dir=get_settings().media_dir)
+        typer.echo(f"canary {platform}:{acc.alias} lane={adapter.lane}")
+        state = adapter.check_login(ctx)
+        typer.echo(f"login: {state}")
+        if isinstance(adapter, CdpAdapterBase):
+            typer.echo("selectors:")
+            handle, page = adapter._open(ctx, adapter.publish_url)
+            try:
+                for name in adapter.selectors:
+                    mark = "HIT " if adapter.has(page, name) else "MISS"
+                    typer.echo(f"  [{mark}] {name} = {adapter.selectors[name]}")
+            finally:
+                handle.close()
+    except Exception as e:
+        _err(e)
+
+
+@app.command()
+def doctor(
+    platform: str = typer.Option(..., "--platform"),
+    account: str = typer.Option(None, "--account"),
+):
+    """选择器体检：附着舰队逐个探测平台注册表（真机校准用）。"""
+    try:
+        _init()
+        from sqlalchemy import select
+
+        from social_hub.adapters.base import ActionContext
+        from social_hub.adapters.cdp.base import CdpAdapterBase
+        from social_hub.adapters.registry import get_adapter
+        from social_hub.config import get_settings
+        from social_hub.db import session
+        from social_hub.models import Account
+
+        adapter = get_adapter(platform)
+        if not isinstance(adapter, CdpAdapterBase):
+            raise ValueError(f"{platform} 不是 CDP 通道，无选择器可体检")
+        with session() as s:
+            q = select(Account).where(Account.platform == platform, Account.status == "active")
+            acc = (s.execute(q.order_by(Account.id)).scalars().first())
+            if acc is None:
+                raise ValueError(f"no active account for {platform}")
+            ctx = ActionContext(task=None, account=acc, session_factory=None,
+                                media_dir=get_settings().media_dir)
+        handle, page = adapter._open(ctx, adapter.publish_url)
+        try:
+            hit = 0
+            for name in adapter.selectors:
+                ok = adapter.has(page, name)
+                hit += ok
+                typer.echo(f"[{'HIT' if ok else 'MISS'}] {name:<16} {adapter.selectors[name]}")
+            typer.echo(f"summary: {hit}/{len(adapter.selectors)} hit")
+        finally:
+            handle.close()
+    except Exception as e:
+        _err(e)
+
+
 def main() -> None:
     app()
 
