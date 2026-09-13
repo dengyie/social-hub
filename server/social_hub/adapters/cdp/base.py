@@ -28,9 +28,14 @@ class CdpAdapterBase(PlatformAdapter):
     login_url: str = ""  # 登录页（扫码/短信，人工完成）
     publish_url: str = ""  # 创作者中心发布页
     publish_button_text: str = "发布"  # 发布按钮可见文案（比 class 稳定）
-    # 平台选择器注册表（子类覆写）。标注 [calibrate] 的键为待真机校准项。
+    confirm_button_text: str = ""  # 发布后确认弹窗（如快手 ant-modal「确认」），空=无
+    login_redirect_marker: str = ""  # 未登录时 URL 会跳到该子串（如 "/login"、"passport."）
+    # 平台选择器注册表（子类覆写）。标注 [calibrate] 的键为待真机校准项；
+    # 来源标注：XiaohongshuSkills（2026-03 真机验证）/ social-auto-upload / 预置待校准。
     selectors: dict[str, str] = {}
-    # 拦截标记：出现在发布页即任务冻结/转人工
+    # 拦截标记：出现在发布页即任务冻结/转人工。支持两种写法：
+    #   "css|selector"  → page.query_selector（CSS）
+    #   "text:文案"     → 可见文本包含匹配（扫 button/div/span/p/a）
     captcha_markers: tuple[str, ...] = ()
     login_markers: tuple[str, ...] = ()
     verify_url: str = ""  # 内容管理页（verify 复查用，可空=仅凭提交回执）
@@ -68,13 +73,24 @@ class CdpAdapterBase(PlatformAdapter):
             raise PermanentError(f"{self.platform}: selector '{name}' not registered (见 selectors 注册表)")
         return sel
 
+    def _marker_hit(self, page, marker: str) -> bool:
+        if marker.startswith("text:"):
+            needle = marker[5:]
+            for el in page.query_selector_all("button, div, span, p, a"):
+                if needle in "".join((el.inner_text() or "").split()):
+                    return True
+            return False
+        return page.query_selector(marker) is not None
+
     def _guard(self, page) -> None:
-        """发布页拦截：验证码 → captcha_wait；未登录 → needs_login。"""
+        """发布页拦截：验证码 → captcha_wait；未登录 → needs_login；支持 URL 重定向判定。"""
+        if self.login_redirect_marker and self.login_redirect_marker in (page.url or ""):
+            raise NeedsLoginError(f"{self.platform}: redirected to login ({page.url})")
         for marker in self.captcha_markers:
-            if page.query_selector(marker):
+            if self._marker_hit(page, marker):
                 raise CaptchaWaitError(f"{self.platform}: captcha/slider detected ({marker})")
         for marker in self.login_markers:
-            if page.query_selector(marker):
+            if self._marker_hit(page, marker):
                 raise NeedsLoginError(f"{self.platform}: not logged in ({marker})")
 
     def has(self, page, name: str) -> bool:
@@ -98,6 +114,26 @@ class CdpAdapterBase(PlatformAdapter):
                 el.click()
                 return
         raise PermanentError(f"{self.platform}: button with text '{text}' not found")
+
+    def click_exact_text(self, page, text: str) -> bool:
+        """按精确可见文案点击任意元素（tab/频道切换用）；找不到返回 False（可容错）。"""
+        for el in page.query_selector_all("div, span, a, button, [role=tab], [role=button]"):
+            if "".join((el.inner_text() or "").split()) == text:
+                el.click()
+                return True
+        return False
+
+    def _click_publish(self, page) -> None:
+        """点发布：注册表有专用选择器优先，否则按文案；随后处理确认弹窗。"""
+        if self.selectors.get("publish_button"):
+            page.click(self._sel("publish_button"))
+        else:
+            self.click_button_by_text(page, self.publish_button_text)
+        if self.confirm_button_text:
+            for el in page.query_selector_all("button, [role=button]"):
+                if self.confirm_button_text in "".join((el.inner_text() or "").split()):
+                    el.click()
+                    break
 
     def upload(self, page, name: str, paths: list[str]) -> None:
         page.set_input_files(self._sel(name), paths)
@@ -155,7 +191,7 @@ class CdpAdapterBase(PlatformAdapter):
         handle, page = self._open(ctx, self.publish_url)
         try:
             detail = self._flow(page, snap, ctx)
-            self.click_button_by_text(page, self.publish_button_text)
+            self._click_publish(page)
         finally:
             handle.close()
         receipt = {"platform": self.platform, **detail}

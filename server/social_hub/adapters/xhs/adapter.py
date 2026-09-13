@@ -1,17 +1,15 @@
 """小红书适配器（CDP 通道，M1）。
 
-创作平台 creator.xiaohongshu.com；图文笔记：图片必需、标题 ≤20 字、正文 QL 编辑器。
-登录 = 扫码（login_interactive 截图二维码）；风控滑块 → captcha_wait。
-选择器标注 [calibrate] 的项需要真机校准（shub doctor）。
+创作平台 creator.xiaohongshu.com；图文笔记：图片必需、标题 ≤20 字。
+选择器来自 XiaohongshuSkills（2026-03 真机校准，GitHub white0dew/XiaohongshuSkills
+scripts/cdp_publish.py SELECTORS），含多级回退；未登录以 URL 重定向 /login 判定。
 """
 
 from __future__ import annotations
 
-import json
-
 from ..base import Capabilities, PermanentError
-from ..registry import register
 from ..cdp.base import CdpAdapterBase
+from ..registry import register
 
 
 class XhsAdapter(CdpAdapterBase):
@@ -20,26 +18,44 @@ class XhsAdapter(CdpAdapterBase):
     capabilities = Capabilities(image_text=True, markdown=False, max_title=20, verifiable=False)
     login_url = "https://creator.xiaohongshu.com/login"
     publish_url = "https://creator.xiaohongshu.com/publish/publish?source=official"
-    publish_button_text = "发布"
+    login_redirect_marker = "/login"  # XiaohongshuSkills：未登录跳 /login
 
     selectors = {
-        # [calibrate] 小红书发布页选择器，2026-09 依据公开资料预置，上线前用 shub doctor 校准
-        "title_input": "#title-textarea input",
-        "body_editor": ".ql-editor[contenteditable='true']",
-        "image_input": "input[type='file']",
-        "image_text_tab": ".channel-tab",  # [calibrate] 图文 tab
+        # XiaohongshuSkills SELECTORS（2026-03 真机验证）
+        "title_input": "div.d-input input",
+        "title_input_alt": "input[placeholder*='标题']",
+        "content_editor": "div.tiptap.ProseMirror",
+        "content_editor_alt": "div.ProseMirror[contenteditable='true']",
+        "content_editor_alt2": "div.ql-editor",
+        "image_input": ".upload-input",
+        "image_input_alt": "input[type='file']",
+        "image_tab_text": "上传图文",
+        "publish_button": ".publish-page-publish-btn button.bg-red",
+        "image_preview_items": ".img-preview-area .pr",
     }
-    login_markers = ('input[placeholder*="扫码"]', ".login-container")  # [calibrate]
+    login_markers = (".login-container",)  # [calibrate] 兜底
     captcha_markers = (".captcha-slider", "#captcha-container")  # [calibrate]
+
+    def _first_has(self, page, *names: str) -> str | None:
+        for name in names:
+            if self.selectors.get(name) and self.has(page, name):
+                return name
+        return None
 
     def _flow(self, page, snap: dict, ctx) -> dict:
         if not snap["cover_path"]:
             raise PermanentError("xhs 图文笔记需要至少 1 张图片（draft cover_media_id）")
-        if self.has(page, "image_text_tab"):
-            self.click(page, "image_text_tab")
-        self.upload(page, "image_input", [snap["cover_path"]])
-        self.fill(page, "title_input", snap["title"])
-        self.type_text(page, "body_editor", snap["body"])
+        self.click_exact_text(page, self.selectors["image_tab_text"])  # 单 tab 态容错（点不到忽略）
+        self.upload(page, "image_input" if self.has(page, "image_input") else "image_input_alt",
+                    [snap["cover_path"]])
+        title_sel = self._first_has(page, "title_input", "title_input_alt")
+        if not title_sel:
+            raise PermanentError("xhs: title input not found（选择器待校准）")
+        self.fill(page, title_sel, snap["title"])
+        editor_sel = self._first_has(page, "content_editor", "content_editor_alt", "content_editor_alt2")
+        if not editor_sel:
+            raise PermanentError("xhs: content editor not found（选择器待校准）")
+        self.type_text(page, editor_sel, snap["body"])
         return {"images": 1, "note_url": None}
 
 

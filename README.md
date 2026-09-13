@@ -11,7 +11,7 @@
 - **API 通道**：平台官方 API，跑在无头服务器上（已支持：微信公众号；B 站 biliup-rs 在路线图）
 - **CDP 通道**：附着到按账号隔离的真实 Chrome Profile，为没有稳定 API 的平台准备（小红书等，M1+）
 
-当前状态：**M1–M3 代码层完备**——7 个平台适配器 + CDP 舰队 + 一键全平台扇出，52 测试全绿。CDP 平台的选择器需真机校准（`shub doctor`），校准 + 真实账号登录后才可实际发布。
+当前状态：**11 个真实平台适配器代码完备**（公众号/B站/掘金/小红书/知乎/抖音/视频号/快手/百家号/头条/CSDN）+ CDP 舰队 + 一键全平台扇出，55 测试全绿。CDP 平台的选择器需真机校准（`shub doctor`），校准 + 真实账号登录后才可实际发布。
 
 ## 平台支持矩阵
 
@@ -24,9 +24,13 @@
 | 知乎 `zhihu` | CDP | 专栏文章 | 回执断点 | Chrome + 登录 + 选择器校准 |
 | 抖音 `douyin` | CDP | 图文/视频 | 回执断点 | Chrome + 扫码 + 选择器校准 |
 | 视频号 `channels` | CDP | 视频/图片 | 回执断点 | Chrome + 微信扫码 + 选择器校准 |
+| 快手 `kuaishou` | CDP | 视频 | 回执断点 + 确认弹窗 | Chrome + 扫码 + 选择器校准 |
+| 百家号 `baijiahao` | CDP | 视频 | 回执断点 | Chrome + 百度登录 + 选择器校准 |
+| 今日头条 `toutiao` | CDP | 图文/视频 | 回执断点 | Chrome + 登录 + 选择器校准（SAU 无头条，全量预置待校准） |
+| CSDN `csdn` | CDP | 博客（Markdown/CodeMirror） | 回执断点 | Chrome + 登录 + 选择器校准 |
 | `mock` | API | 测试假平台 | 全链路 | 无（演示/验收用） |
 
-CDP 红线：Chrome 端口一律 9300+、按账号独立 Profile；**绝不杀 Chrome 进程**（只 disconnect）；验证码 → `captcha_wait` 冻结等人。
+选择器来源分级：**小红书** = XiaohongshuSkills（2026-03 真机验证）；**抖音/快手/百家号/视频号** = social-auto-upload 同源流程；**头条/CSDN** = 预置待校准。CDP 红线：Chrome 端口一律 9300+、按账号独立 Profile；**绝不杀 Chrome 进程**（只 disconnect）；验证码 → `captcha_wait` 冻结等人。
 
 ## 特性
 

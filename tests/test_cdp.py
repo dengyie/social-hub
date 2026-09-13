@@ -51,6 +51,49 @@ CHANNELS_HTML = """
 """
 LOGIN_HTML = '<html><body><div class="login-container"></div></body></html>'
 CAPTCHA_HTML = '<html><body><div class="captcha-slider"></div></body></html>'
+# —— 参考项目真机选择器对应 fixture ——
+XHS_REAL_HTML = """
+<html><body>
+<div class="creator-tab">上传图文 上传视频</div>
+<div class="upload-area"><input class="upload-input" type="file"/></div>
+<div class="d-input"><input/></div>
+<div class="tiptap ProseMirror" contenteditable="true"></div>
+<div class="publish-page-publish-btn"><button class="bg-red">发 布</button></div>
+</body></html>
+"""
+DOUYIN_LOGIN_HTML = """
+<html><body><div class="web-login"><span>扫码登录</span><span>手机号登录</span></div></body></html>
+"""
+KS_HTML = """
+<html><body>
+<button class="_upload-btn-abc">上传视频</button>
+<input type="file" id="f"/>
+<div contenteditable="true"></div>
+<button>发布</button><button>确 认</button>
+</body></html>
+"""
+BJH_HTML = """
+<html><body>
+<input type="file" accept="video/mp4"/>
+<div class="contentEditable-x">标题占位</div>
+<button>发布</button>
+</body></html>
+"""
+TT_HTML = """
+<html><body>
+<input placeholder="请输入标题（最多 30 字）"/>
+<div class="ProseMirror" contenteditable="true"></div>
+<input type="file"/>
+<button>发 布</button>
+</body></html>
+"""
+CSDN_HTML = """
+<html><body>
+<input placeholder="标题"/>
+<div class="cm-content" contenteditable="true"></div>
+<button>发布博客</button>
+</body></html>
+"""
 
 
 @pytest.fixture()
@@ -76,9 +119,10 @@ def cdp_env(env, monkeypatch):
 
 
 def _cdp_ctx(make_task, platform: str, html: str, alias: str = "main", cover: bool = True,
-             title: str = "hello social-hub"):
-    make_task(platform=platform, alias=alias, cover=cover, title=title,
-              cdp_port=9300 + {"xhs": 0, "zhihu": 1, "douyin": 2, "channels": 3}[platform])
+             title: str = "hello social-hub", port_offset: int | None = None):
+    if port_offset is None:
+        port_offset = {"xhs": 0, "zhihu": 1, "douyin": 2, "channels": 3}.get(platform, 99)
+    make_task(platform=platform, alias=alias, cover=cover, title=title, cdp_port=9300 + port_offset)
     from social_hub.config import get_settings
     from social_hub.db import get_session_factory
     from social_hub.vault.service import get_account
@@ -140,8 +184,8 @@ def test_cdp_guard_blocks_login_and_captcha(make_task, cdp_env):
 
 def test_xhs_publish_flow_replay(make_task, cdp_env):
     adapter = get_adapter("xhs")
-    cdp_env.calls["html"] = XHS_HTML
-    ctx = _cdp_ctx(make_task, "xhs", XHS_HTML, cover=True)
+    cdp_env.calls["html"] = XHS_REAL_HTML
+    ctx = _cdp_ctx(make_task, "xhs", XHS_REAL_HTML, cover=True)
     result = adapter.publish(ctx)
     assert result.submitted
     assert cdp_env.calls["connected"]  # 确认走过一次连接
@@ -175,9 +219,44 @@ def test_zhihu_douyin_channels_flow_replay(make_task, cdp_env):
         assert json.loads(ctx.task.evidence)["publish_receipt"]["platform"] == platform
 
 
+def test_new_platforms_flow_replay(make_task, cdp_env):
+    """快手/百家号/头条/CSDN：真机来源选择器的 fixture 回放。"""
+    port_offset = {"kuaishou": 4, "baijiahao": 5, "toutiao": 6, "csdn": 7}
+    for platform, html in (("kuaishou", KS_HTML), ("baijiahao", BJH_HTML),
+                           ("toutiao", TT_HTML), ("csdn", CSDN_HTML)):
+        cdp_env.calls["html"] = html
+        adapter = get_adapter(platform)
+        ctx = _cdp_ctx(make_task, platform, html, alias=f"a-{platform}", cover=True,
+                       port_offset=port_offset[platform])
+        result = adapter.publish(ctx)
+        assert result.submitted, platform
+        assert json.loads(ctx.task.evidence)["publish_receipt"]["platform"] == platform
+
+
+def test_xhs_real_selectors_replay(make_task, cdp_env):
+    """XiaohongshuSkills 真机选择器回放：tab→上传→标题→正文→发布按钮。"""
+    adapter = get_adapter("xhs")
+    cdp_env.calls["html"] = XHS_REAL_HTML
+    ctx = _cdp_ctx(make_task, "xhs", XHS_REAL_HTML, cover=True, alias="xhs-real")
+    result = adapter.publish(ctx)
+    assert result.submitted
+    assert json.loads(ctx.task.evidence)["publish_receipt"]["platform"] == "xhs"
+
+
+def test_text_marker_login_guard(make_task, cdp_env):
+    """text: 文案标记（douyin「扫码登录」）→ needs_login。"""
+    adapter = get_adapter("douyin")
+    cdp_env.calls["html"] = DOUYIN_LOGIN_HTML
+    ctx = _cdp_ctx(make_task, "douyin", DOUYIN_LOGIN_HTML, cover=True, alias="dy-login")
+    with pytest.raises(NeedsLoginError):
+        adapter.publish(ctx)
+
+
 def test_contract_suite_all_adapters(make_task, cdp_env):
     """契约套件（元数据 + 未支持动作）覆盖全部内置适配器。"""
-    assert set(registered_platforms()) >= {"gzh", "bili", "juejin", "xhs", "zhihu", "douyin", "channels", "mock"}
+    assert set(registered_platforms()) >= {
+        "gzh", "bili", "juejin", "xhs", "zhihu", "douyin", "channels",
+        "kuaishou", "baijiahao", "toutiao", "csdn", "mock"}
     for name in registered_platforms():
         adapter = get_adapter(name)
         check_metadata(adapter)
