@@ -98,6 +98,18 @@ def test_missing_cover_rejected(env, make_task):
         GzhAdapter().publish(out["ctx"])
 
 
+def test_video_cover_rejected_for_image_thumb(env, make_task, monkeypatch):
+    """review P1 根因回归（API 通道）：公众号 thumb_media_id 只收图片——
+    视频封面必须在任何 API 调用前被拒绝（fail-fast，零副作用）。"""
+    out = make_task(platform="gzh", alias="mainvid", title="视频封面", cover=True,
+                    cover_kind="video", creds={"app_id": "wx1", "app_secret": "s"})
+    calls: list = []
+    a = _adapter(monkeypatch, calls)
+    with pytest.raises(PermanentError, match="kind=image"):
+        a.publish(out["ctx"])
+    assert calls == [], "kind 校验失败前不得发起任何微信 API 调用"
+
+
 def test_title_limit_enforced(env, make_task):
     out = make_task(platform="gzh", alias="main", title="标" * 65, cover=True,
                     creds={"app_id": "wx1", "app_secret": "s"})

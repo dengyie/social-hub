@@ -39,7 +39,7 @@ class Account(Base):
     lane: Mapped[str] = mapped_column(String(8))  # api | cdp
     credential_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet 密文
     chrome_profile: Mapped[str | None] = mapped_column(Text, nullable=True)  # CDP 通道专用
-    cdp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 9300+，见设计文档 §6.3
+    cdp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 9222 共享(attach-only) 或 9300+ 独立，见 core/fleet.py
     proxy: Mapped[str | None] = mapped_column(Text, nullable=True)
     rate_limit: Mapped[str] = mapped_column(Text, default=lambda: __import__("json").dumps(DEFAULT_RATE_LIMIT))
     login_state: Mapped[str] = mapped_column(String(16), default="unknown")  # ok|expired|unknown

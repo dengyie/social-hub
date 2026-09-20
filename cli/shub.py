@@ -35,6 +35,21 @@ def _err(e: Exception) -> None:
     raise typer.Exit(1)
 
 
+def _probe_settle(page) -> None:
+    """探针前等 SPA 渲染：domcontentloaded 后选择器常未挂载（真机 2026-09-13 假 MISS 实证）。"""
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        try:
+            page.wait_for_timeout(3000)
+        except Exception:
+            return
+    try:
+        page.wait_for_timeout(800)
+    except Exception:
+        pass
+
+
 def _split_var(kv: str) -> tuple[str, str]:
     if "=" not in kv:
         raise ValueError(f"--var 需要 key=value，得到: {kv}")
@@ -78,7 +93,7 @@ def account_add(
     platform: str,
     alias: str,
     var: list[str] = typer.Option([], "--var", help="凭据键值对 key=value，可重复"),
-    cdp_port: int = typer.Option(None, "--cdp-port", help="CDP 调试端口（必须 >=9300；9222 为 Chrome 默认 CDP 端口，禁用）"),
+    cdp_port: int = typer.Option(None, "--cdp-port", help="CDP 调试端口：9222=共享浏览器（attach-only）或 >=9300 独立实例；其余禁用"),
     per_day: int = typer.Option(None, "--per-day"),
     min_interval_min: int = typer.Option(None, "--min-interval-min"),
 ):
@@ -185,6 +200,7 @@ def publish(
     account: str = typer.Option(..., "--account", help="账号 alias"),
     wait: bool = typer.Option(False, "--wait", help="内联执行到终态（不走 daemon）"),
     at: str = typer.Option(None, "--at", help="ISO8601 定时（naive UTC）"),
+    preview: bool = typer.Option(False, "--preview", help="只填表不点发布（CDP；XiaohongshuSkills 同款）"),
 ):
     """入队发布任务；--wait 时本地内联执行（验收/调试用）。"""
     try:
@@ -194,7 +210,7 @@ def publish(
         from social_hub.models import AutomationTask
 
         with session() as s:
-            t = enqueue_publish(s, draft, platform, account, _parse_dt(at))
+            t = enqueue_publish(s, draft, platform, account, _parse_dt(at), preview=preview)
             tid = t.id
             s.commit()
         typer.echo(f"task #{tid} enqueued")
@@ -319,7 +335,7 @@ def canary(
         from social_hub.config import get_settings
         from social_hub.db import session
         from social_hub.models import Account
-        from social_hub.vault.service import get_account as get_acc
+        from social_hub.vault.service import get_account as get_acc, touch_login_check
 
         adapter = get_adapter(platform)
         with session() as s:
@@ -331,15 +347,23 @@ def canary(
                     .order_by(Account.id)).scalars().first()
             if acc is None:
                 raise ValueError(f"no active account for {platform}")
+            acc_id = acc.id
+            acc_alias = acc.alias
             ctx = ActionContext(task=None, account=acc, session_factory=None,
                                 media_dir=get_settings().media_dir)
-        typer.echo(f"canary {platform}:{acc.alias} lane={adapter.lane}")
+        typer.echo(f"canary {platform}:{acc_alias} lane={adapter.lane}")
         state = adapter.check_login(ctx)
         typer.echo(f"login: {state}")
+        with session() as s:
+            row = s.get(Account, acc_id)
+            if row is not None:
+                touch_login_check(s, row, state)
+                s.commit()
         if isinstance(adapter, CdpAdapterBase):
             typer.echo("selectors:")
             handle, page = adapter._open(ctx, adapter.publish_url)
             try:
+                _probe_settle(page)
                 for name in adapter.selector_names():
                     mark = "HIT " if adapter.has(page, name) else "MISS"
                     typer.echo(f"  [{mark}] {name} = {adapter.selectors[name]}")
@@ -378,6 +402,7 @@ def doctor(
                                 media_dir=get_settings().media_dir)
         handle, page = adapter._open(ctx, adapter.publish_url)
         try:
+            _probe_settle(page)
             hit = 0
             names = adapter.selector_names()
             for name in names:

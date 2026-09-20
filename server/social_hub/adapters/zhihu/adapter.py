@@ -14,10 +14,14 @@ from ..cdp.base import CdpAdapterBase
 class ZhihuAdapter(CdpAdapterBase):
     platform = "zhihu"
     lane = "cdp"
-    capabilities = Capabilities(image_text=True, markdown=False, max_title=100, verifiable=False)
+    capabilities = Capabilities(image_text=False, markdown=False, max_title=100, verifiable=False)
     login_url = "https://www.zhihu.com/signin"
     publish_url = "https://zhuanlan.zhihu.com/write"
     publish_button_text = "发布"
+    # 专栏文章为纯文字写作页：flow 无媒体上传路径，故不声明媒体能力，
+    # 也不接受封面（media_kinds 空 = 忽略封面，避免误导用户以为会带图）
+    media_kinds = ()
+    media_required = False
 
     selectors = {
         # [calibrate] 知乎写作页选择器，上线前用 shub doctor 校准
@@ -28,8 +32,10 @@ class ZhihuAdapter(CdpAdapterBase):
     captcha_markers = (".Captcha", ".captcha-container")  # [calibrate]
 
     def _flow(self, page, snap: dict, ctx) -> dict:
-        self.fill(page, "title_input", snap["title"])
-        self.type_text(page, "body_editor", snap["body"])
+        title_sel = self.require_has(page, "title_input")
+        self.fill(page, title_sel, snap["title"])
+        editor_sel = self.require_has(page, "body_editor")
+        self.type_text(page, editor_sel, snap["body"])
         return {"article_url": None}
 
 

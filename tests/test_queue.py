@@ -140,6 +140,26 @@ def test_reclaim_expired_requeues(env):
         assert t.claimed_by is None
 
 
+def test_reclaim_expired_verifying_requeues_keeps_receipt(env):
+    """P0 闭环：verifying 租约到期必须回收。否则核验阶段崩溃任务永久卡住，
+    续跑闸门（publish_receipt）永远走不到。回收后证据保留，重跑只核验。"""
+    tid = _enqueue()
+    claim_next(get_claim_engine(), get_session_factory(), "w1", 60)
+    with session() as s:
+        t = s.get(AutomationTask, tid)
+        t.status = "verifying"
+        t.evidence = '{"publish_id":"pub-keep"}'
+        t.lease_expires_at = utcnow() - timedelta(seconds=1)
+        s.commit()
+    assert reclaim_expired(get_claim_engine(), get_session_factory(), max_retries=3) == 1
+    with session() as s:
+        t = s.get(AutomationTask, tid)
+        assert t.status == "queued"
+        assert t.retries == 1
+        assert t.claimed_by is None
+        assert '"publish_id": "pub-keep"' in t.evidence or '"publish_id":"pub-keep"' in t.evidence
+
+
 def test_reclaim_exhausted_fails(env):
     tid = _enqueue()
     claim_next(get_claim_engine(), get_session_factory(), "w1", 60)

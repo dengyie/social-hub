@@ -36,8 +36,8 @@ def make_task(env):
     """工厂：建账号+媒体+草稿变体+任务（不入队执行），返回 ctx 与句柄。"""
 
     def _make(platform: str = "mock", alias: str = "demo", title: str = "hello social-hub",
-             body: str = "<p>hi</p>", cover: bool = False, creds: dict | None = None,
-             cdp_port: int | None = None):
+             body: str = "<p>hi</p>", cover: bool = False, cover_kind: str = "image",
+             creds: dict | None = None, cdp_port: int | None = None):
         from social_hub.content.draft_service import create_draft
         from social_hub.core.taskops import enqueue_publish
         from social_hub.db import session
@@ -49,9 +49,11 @@ def make_task(env):
             create_account(s, platform, alias, creds or {"token": "demo"}, cdp_port=cdp_port)
             cover_id = None
             if cover:
-                f = env.media_dir / "seed-cover.jpg"
+                ext = ".mp4" if cover_kind == "video" else ".jpg"
+                f = env.media_dir / f"seed-cover{ext}"
                 f.parent.mkdir(parents=True, exist_ok=True)
-                f.write_bytes(b"\xff\xd8fakejpg")
+                # 内容寻址去重：两种 kind 必须内容不同，否则 mp4 会命中 jpg 的 sha 复用为 image
+                f.write_bytes((b"\x00\x00fakevideo" if cover_kind == "video" else b"\xff\xd8fakejpg"))
                 cover_id = ingest(s, env.media_dir, f).id
             d = create_draft(s, title=title, body=body, platform=platform, cover_media_id=cover_id)
             task = enqueue_publish(s, d.id, platform, alias)

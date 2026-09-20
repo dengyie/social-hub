@@ -13,7 +13,7 @@ RECOVERABLE = {"needs_login", "captcha_wait"}
 
 ALLOWED: dict[str, set[str]] = {
     "queued": {"running", "canceled"},
-    "running": {"verifying", "needs_login", "captcha_wait", "failed", "queued"},  # queued=瞬时错误退避重试
+    "running": {"verifying", "done", "needs_login", "captcha_wait", "failed", "queued"},  # done=preview 只填不发；queued=瞬时错误退避重试
     "verifying": {"done", "failed", "queued"},
     "needs_login": {"queued", "canceled", "failed"},
     "captcha_wait": {"queued", "canceled", "failed"},

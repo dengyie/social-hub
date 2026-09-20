@@ -65,6 +65,11 @@ class FakePage:
         self.url = "about:blank"
         self.keyboard = FakeKeyboard(self)
         self._last_clicked: str | None = None
+        self.closed: bool = False
+
+    def close(self) -> None:
+        self.closed = True
+        self.actions.append(("close",))
 
     # playwright Page 子集
     def goto(self, url: str, timeout: int = 0, wait_until: str | None = None) -> None:

@@ -2,6 +2,7 @@
 
 认领 = BEGIN IMMEDIATE 抢占（同库写者互斥）→ 内联账号限频过滤 → 原子置 running + 租约。
 到期未心跳的租约由 reclaim_expired 回收（退避重排或终态失败），防 worker 崩溃饿死队列。
+verifying 与 running 同等回收：核验阶段崩溃后回 queued，续跑靠 evidence 闸门只核验、绝不重发。
 """
 
 from __future__ import annotations
@@ -127,7 +128,7 @@ def heartbeat(claim_engine: Engine, task_id: int, worker_id: str, lease_seconds:
             text(
                 """
                 UPDATE automation_tasks SET lease_expires_at=:lease, updated_at=:now
-                WHERE id=:tid AND claimed_by=:worker AND status='running'
+                WHERE id=:tid AND claimed_by=:worker AND status IN ('running','verifying')
                 """
             ),
             {"lease": now + timedelta(seconds=lease_seconds), "now": now, "tid": task_id, "worker": worker_id},
@@ -148,7 +149,8 @@ def reclaim_expired(
             text(
                 """
                 SELECT id FROM automation_tasks
-                WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= :now
+                WHERE status IN ('running','verifying')
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at <= :now
                 """
             ),
             {"now": now},

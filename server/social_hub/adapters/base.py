@@ -53,6 +53,10 @@ class UnsupportedActionError(PermanentError):
 
 @dataclass
 class Capabilities:
+    # 内容形态语义（review P2）：`text`=纯文字正文；`image_text`=正文中需上传图片；
+    # `video`=视频投稿；`markdown`=Markdown 正文。至少声明一种，且要与 flow 实际承载一致——
+    # 契约测试 check_capability_truthfulness 校验声明的媒体能力有对应媒体输入。
+    text: bool = True
     image_text: bool = False
     video: bool = False
     markdown: bool = False
@@ -78,12 +82,13 @@ class Evidence:
 class ActionContext:
     """单次动作执行上下文：任务 + 账号 + 会话（编排器持有）+ 会话工厂。"""
 
-    def __init__(self, task, account, session_factory, media_dir, session=None):
+    def __init__(self, task, account, session_factory, media_dir, session=None, preview: bool = False):
         self.task = task
         self.account = account
         self.session_factory = session_factory
         self.media_dir = media_dir
         self.session = session  # 编排器事务内会话；适配器可增量落证据后 commit
+        self.preview = preview  # True = 只填表不点发布（XiaohongshuSkills --preview）
 
     def db(self):
         return self.session_factory()
@@ -124,10 +129,31 @@ def load_variant_snapshot(ctx: ActionContext, *, max_title: int | None = None) -
     return snap
 
 
+def require_media_kind(snap: dict, *, platform: str, kinds: tuple[str, ...] = (),
+                       required: bool = False) -> None:
+    """媒体 kind 校验的**唯一实现**（review P1 根因：双通道曾各写一份，易漏/易漂移）。
+
+    - `kinds` 非空且已带媒体 → 媒体 kind 必须命中，否则拒绝（图片不会误投视频平台，反之亦然）。
+    - `required=True` 且未带媒体 → 拒绝。
+    - `kinds=()` 表示该平台不消费媒体（纯文本平台），此时忽略封面。
+
+    调用点一律在触碰任何外部副作用（浏览器 / 平台 API）之前——fail-fast、零副作用。
+    CDP 通道经 `CdpAdapterBase._validate_media` 调用；API 通道（gzh 图文封面 / bili 视频）
+    直接调用。
+    """
+    cover, kind = snap.get("cover_path"), snap.get("cover_kind")
+    if kinds and cover and kind not in kinds:
+        raise PermanentError(f"{platform} 需要 kind={'/'.join(kinds)} 的媒体，got kind={kind}")
+    if required and not cover:
+        raise PermanentError(f"{platform} 需要媒体文件（draft cover_media_id）")
+
+
 class PlatformAdapter(ABC):
     platform: str = ""
     lane: str = "api"  # api | cdp
     capabilities: Capabilities = Capabilities()
+    # True = 选择器/URL 未真机校准：fan-out 跳过；显式 shub publish 仍可试
+    calibrate_only: bool = False
 
     @abstractmethod
     def check_login(self, ctx: ActionContext) -> str:

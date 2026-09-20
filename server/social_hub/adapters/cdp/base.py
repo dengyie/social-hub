@@ -44,11 +44,33 @@ class CdpAdapterBase(PlatformAdapter):
     login_markers: tuple[str, ...] = ()
     verify_url: str = ""  # 内容管理页（verify 复查用，可空=仅凭提交回执）
 
+    # 媒体 kind 约束（review P1）：本平台允许的媒体 kind；空 = 纯文本平台（封面忽略）。
+    # 此前只有 bili 校验 kind，video-only 平台只判"有没有封面"——图片会被投成视频
+    # 而 flow 一路"成功"。约束在碰浏览器前校验（`_validated_snapshot`），零副作用。
+    media_kinds: tuple[str, ...] = ()
+    media_required: bool = False  # 是否必须携带媒体（纯文本平台 False）
+
     # ---- 参数校验（浏览器无关，契约测试直测）----
     def _validated_snapshot(self, ctx: ActionContext) -> dict:
         from ..base import load_variant_snapshot
 
-        return load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
+        snap = load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
+        self._validate_media(snap)
+        return snap
+
+    def _validate_media(self, snap: dict) -> None:
+        """媒体 kind 校验：错配媒体必须在提交前拒绝（不产生平台侧副作用）。
+
+        唯一实现见 base.require_media_kind（CDP 与 API 双通道共用，杜绝两处拷贝漂移）。
+        """
+        from ..base import require_media_kind
+
+        require_media_kind(snap, platform=self.platform,
+                           kinds=self.media_kinds, required=self.media_required)
+
+    def _resolve_publish_url(self, snap: dict) -> str:
+        """发布页 URL 可按媒体 kind 分流（如头条图文/视频两个发布页）。"""
+        return self.publish_url
 
     # ---- 选择器原语（playwright Page 与测试 FakePage 同构）----
     def selector_names(self) -> list[str]:
@@ -82,6 +104,29 @@ class CdpAdapterBase(PlatformAdapter):
     def has(self, page, name: str) -> bool:
         return page.query_selector(self._sel(name)) is not None
 
+    def first_has(self, page, *names: str, timeout: float = 15.0) -> str | None:
+        """有界轮询返回第一个已挂载的选择器名；超时返回 None。
+
+        根因背景：切 tab/上传文件后表单由 SPA 异步渲染，瞬时检查会竞态
+        （真机 2026-09-14 小红书实证）。所有"上传后表单"类探测统一走这里。
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            for name in names:
+                if self.selectors.get(name) and self.has(page, name):
+                    return name
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.5)
+
+    def require_has(self, page, *names: str, timeout: float = 15.0) -> str:
+        """first_has 的硬失败版：超时即 PermanentError（选择器待校准）。"""
+        name = self.first_has(page, *names, timeout=timeout)
+        if not name:
+            raise PermanentError(
+                f"{self.platform}: {'/'.join(names)} 未命中（选择器待校准）")
+        return name
+
     def fill(self, page, name: str, text: str) -> None:
         page.fill(self._sel(name), text)
 
@@ -102,11 +147,46 @@ class CdpAdapterBase(PlatformAdapter):
         raise PermanentError(f"{self.platform}: button with text '{text}' not found")
 
     def click_exact_text(self, page, text: str) -> bool:
-        """按精确可见文案点击任意元素（tab/频道切换用）；找不到返回 False（可容错）。"""
-        for el in page.query_selector_all("div, span, a, button, [role=tab], [role=button]"):
-            if "".join((el.inner_text() or "").split()) == text:
-                el.click()
+        """按精确可见文案点击任意元素（tab/频道切换用）；找不到返回 False（可容错）。
+
+        根因修复（2026-09-14 小红书「上传图文」真机实证）：页面常存在同文案的
+        视口外模板节点（x=-9726），盲点首个候选会等满默认 30s 超时卡死流程。
+        修复分两层：①先按可见性 + 视口内 bounding box 预筛，正常路径一次点中；
+        ②仍失败才逐候选 3s 短超时快速失败兜底（覆盖"在视口外但可滚动入视口"的
+        合法元素）；TypeError 分支兼容不带 timeout 形参的测试假件。
+        """
+        candidates = [
+            el for el in page.query_selector_all("div, span, a, button, [role=tab], [role=button]")
+            if "".join((el.inner_text() or "").split()) == text
+        ]
+        if not candidates:
+            return False
+        in_viewport = []
+        for el in candidates:
+            is_visible = getattr(el, "is_visible", None)
+            if is_visible is not None and not is_visible():
+                continue
+            bounding_box = getattr(el, "bounding_box", None)
+            if bounding_box is not None:
+                box = bounding_box()
+                if box is None:  # display:none 等不可点元素
+                    continue
+                if box.get("x", 0) + box.get("width", 0) <= 0 or box.get("y", 0) + box.get("height", 0) <= 0:
+                    continue  # 视口外（模板拷贝节点）
+            in_viewport.append(el)
+        ordered = in_viewport + [c for c in candidates if c not in in_viewport]
+        for el in ordered:
+            try:
+                el.click(timeout=3000)
                 return True
+            except TypeError:
+                try:
+                    el.click()
+                    return True
+                except Exception:
+                    continue
+            except Exception:
+                continue
         return False
 
     def _click_publish(self, page) -> None:
@@ -152,13 +232,17 @@ class CdpAdapterBase(PlatformAdapter):
         return handle, page
 
     def check_login(self, ctx: ActionContext) -> str:
+        handle = None
         try:
-            _, page = self._open(ctx, self.publish_url)
+            handle, _page = self._open(ctx, self.publish_url)
+            return "ok"
         except NeedsLoginError:
             return "expired"
         except (RuntimeError, PermanentError) as e:  # chrome 未装/选择器未注册等环境问题
             raise PermanentError(f"{self.platform} check_login env error: {e}") from e
-        return "ok"
+        finally:
+            if handle is not None:
+                handle.close()
 
     def login_interactive(self, ctx: ActionContext) -> dict:
         """打开登录页截图落盘（含二维码）；人工扫码后重跑任务。远端把 qr_path 推给用户。
@@ -205,9 +289,18 @@ class CdpAdapterBase(PlatformAdapter):
         prior = json.loads(ctx.task.evidence or "{}")
         if prior.get("publish_receipt"):
             return PublishResult(submitted=True, detail=prior["publish_receipt"])
-        handle, page = self._open(ctx, self.publish_url)
+        handle, page = self._open(ctx, self._resolve_publish_url(snap))
         try:
             detail = self._flow(page, snap, ctx)
+            if ctx.preview:
+                # 只填不发：不点发布、不写 publish_receipt（receipt 是防重发闸门）
+                preview = {"platform": self.platform, "preview": True, **detail}
+                data = json.loads(ctx.task.evidence or "{}")
+                data["preview"] = preview
+                ctx.task.evidence = json.dumps(data, ensure_ascii=False)
+                if ctx.session is not None:
+                    ctx.session.commit()
+                return PublishResult(submitted=False, detail={"preview": preview})
             self._click_publish(page)
         finally:
             handle.close()

@@ -60,8 +60,13 @@ def idem_key(action: str, platform: str, account_id: int, payload_digest: str) -
     return hashlib.sha256(raw.encode()).hexdigest()[:64]
 
 
-def enqueue_publish(session: Session, draft_id: int, platform: str, account_alias: str, scheduled_at=None) -> AutomationTask:
-    """草稿变体 × 账号 → 发布任务（幂等：活跃任务存在则返回原任务）。"""
+def enqueue_publish(session: Session, draft_id: int, platform: str, account_alias: str,
+                    scheduled_at=None, preview: bool = False) -> AutomationTask:
+    """草稿变体 × 账号 → 发布任务（幂等：活跃任务存在则返回原任务）。
+
+    preview=True：只填表不点发布（CDP；编排器读 payload.preview）。
+    未校准平台（adapter.calibrate_only）允许显式入队，但 fan-out 会跳过。
+    """
     import json as _json
 
     from sqlalchemy import select
@@ -90,10 +95,17 @@ def enqueue_publish(session: Session, draft_id: int, platform: str, account_alia
         select(AutomationTask).where(AutomationTask.idem_key == key, AutomationTask.status.in_(ACTIVE))
     ).scalar_one_or_none()
     if existing is not None:
+        if preview and existing.status == "queued":
+            data = _json.loads(existing.payload or "{}")
+            data["preview"] = True
+            existing.payload = _json.dumps(data, ensure_ascii=False)
         return existing  # 幂等命中
+    payload = {"variant_id": variant.id}
+    if preview:
+        payload["preview"] = True
     task = AutomationTask(
         action_type="publish",
-        payload=_json.dumps({"variant_id": variant.id}, ensure_ascii=False),
+        payload=_json.dumps(payload, ensure_ascii=False),
         idem_key=key,
         account_id=account.id,
         platform=platform,
@@ -114,6 +126,7 @@ def enqueue_fanout(session: Session, draft_id: int, scheduled_at=None) -> tuple[
     """
     from sqlalchemy import select
 
+    from ..adapters.registry import get_adapter
     from ..models import Account, DraftVariant
 
     variants = list(session.execute(
@@ -130,6 +143,15 @@ def enqueue_fanout(session: Session, draft_id: int, scheduled_at=None) -> tuple[
         ).scalars().first()
         if account is None:
             skipped.append({"platform": v.platform, "reason": "no active account"})
+            continue
+        try:
+            adapter = get_adapter(v.platform)
+        except ValueError as e:
+            skipped.append({"platform": v.platform, "reason": str(e)})
+            continue
+        if getattr(adapter, "calibrate_only", False):
+            skipped.append({"platform": v.platform,
+                            "reason": "calibrate-only (explicit `shub publish` required)"})
             continue
         try:
             tasks.append(enqueue_publish(session, draft_id, v.platform, account.alias, scheduled_at))

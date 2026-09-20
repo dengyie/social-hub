@@ -68,3 +68,7 @@ def reset_settings() -> Settings:  # 测试用
 
 def generate_token() -> str:
     return f"shub_{secrets.token_urlsafe(24)}_{__version__}"
+
+
+MIN_CDP_PORT: int = 9300  # 按账号独立实例的独占端口段下限
+SHARED_CDP_PORT: int = 9222  # daily-checkin 共享浏览器（mac 方案）：attach-only，绝不代启/代关

@@ -53,11 +53,12 @@ class GzhAdapter(PlatformAdapter):
         return GzhClient(creds.get("app_id", ""), creds.get("app_secret", ""))
 
     def _load_variant(self, ctx: ActionContext):
-        from ..base import load_variant_snapshot
+        from ..base import load_variant_snapshot, require_media_kind
 
         snap = load_variant_snapshot(ctx, max_title=self.capabilities.max_title)
-        if not snap["cover_path"]:
-            raise PermanentError("gzh draft requires a cover (thumb_media_id)")
+        # 公众号 thumb_media_id 必须是图片（API add_material_image 只收图）。
+        # review P1 根因：媒体 kind 校验统一收口唯一实现，双通道共用。
+        require_media_kind(snap, platform="gzh", kinds=("image",), required=True)
         return snap
 
     def check_login(self, ctx: ActionContext) -> str:
@@ -78,8 +79,6 @@ class GzhAdapter(PlatformAdapter):
             raise PermanentError(
                 f"title too long for gzh ({len(snap['title'])} > {self.capabilities.max_title})"
             )
-        if not snap["cover_path"]:
-            raise PermanentError("gzh draft requires a cover (thumb_media_id)")
 
         prior = json.loads(ctx.task.evidence or "{}")
         client = self._client(ctx)

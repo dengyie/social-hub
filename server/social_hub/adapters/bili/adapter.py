@@ -25,7 +25,8 @@ from .client import BiliClient
 class BiliAdapter(PlatformAdapter):
     platform = "bili"
     lane = "api"
-    capabilities = Capabilities(image_text=False, video=True, markdown=False, max_title=80, verifiable=True)
+    capabilities = Capabilities(text=False, image_text=False, video=True, markdown=False,
+                                max_title=80, verifiable=True)
 
     def _client(self) -> BiliClient:
         from ...config import get_settings
@@ -46,18 +47,17 @@ class BiliAdapter(PlatformAdapter):
         raise NeedsLoginError(json.dumps(self._client().login_hint(), ensure_ascii=False))
 
     def publish(self, ctx: ActionContext) -> PublishResult:
+        from ..base import require_media_kind
+
         snap = self._validated_snapshot(ctx)
         prior = json.loads(ctx.task.evidence or "{}")
         bvid = prior.get("bvid")
         if not bvid:
             video = prior.get("video_path")
             if not video:
-                if not snap["cover_path"]:
-                    raise PermanentError("bili 投稿需要视频文件（media kind=video）")
-                if snap["cover_kind"] != "video":
-                    raise PermanentError(
-                        f"bili 需要 kind=video 的媒体，got kind={snap['cover_kind']}"
-                    )
+                # 媒体 kind 校验唯一实现（review P1 根因）。仅在首次上传前校验：
+                # 已有 video_path 断点=文件已选定，续跑不重复要求当前变体仍带封面。
+                require_media_kind(snap, platform="bili", kinds=("video",), required=True)
                 video = snap["cover_path"]
                 self._merge(ctx, {"video_path": video})  # 断点一：文件路径先落盘
             client = self._client()

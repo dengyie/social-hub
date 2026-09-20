@@ -23,7 +23,7 @@ from .client import JuejinClient
 class JuejinAdapter(PlatformAdapter):
     platform = "juejin"
     lane = "api"
-    capabilities = Capabilities(image_text=True, markdown=True, max_title=100, verifiable=True)
+    capabilities = Capabilities(image_text=False, markdown=True, max_title=100, verifiable=True)
 
     def _client(self, ctx: ActionContext) -> JuejinClient:
         from ...vault.service import get_credentials
@@ -39,8 +39,9 @@ class JuejinAdapter(PlatformAdapter):
     def check_login(self, ctx: ActionContext) -> str:
         client = self._client(ctx)
         try:
-            client._request("GET", "/content_api/v1/article/query_list",
-                            params={"cursor": "0", "sort_type": 2}, json={})
+            # query_list 只认 POST（GET 返回 err_no=2 请求路由不存在，真机 2026-09-13 实证）
+            client._request("POST", "/content_api/v1/article/query_list",
+                            json={"cursor": "0", "sort_type": 2})
             return "ok"
         except CredentialsError:
             return "expired"

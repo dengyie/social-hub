@@ -21,3 +21,6 @@ dist/
 .smoke-demo/
 .DS_Store
 Thumbs.db
+
+# 本机会话记忆（含内部运维线索，不进公开仓）
+.codex-memory/

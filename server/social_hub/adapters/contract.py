@@ -12,12 +12,42 @@ from .base import ActionContext, Capabilities, Evidence, PermanentError, Platfor
 
 VALID_LANES = {"api", "cdp"}
 
+# CDP 平台声明媒体能力（image_text/video）时，必须注册的媒体输入选择器键——
+# review P2：防止像 zhihu/csdn 曾声明 image_text 却无任何媒体上传路径的"声明失真"。
+MEDIA_SELECTOR_KEYS = {"media_input", "media_input_alt", "image_input",
+                       "image_input_alt", "image_input_alt2",
+                       "video_input", "video_input_alt"}
+
 
 def check_metadata(adapter: PlatformAdapter) -> None:
     assert adapter.platform and adapter.platform.replace("_", "").isalnum(), "platform 名非法"
     assert adapter.lane in VALID_LANES, f"lane 必须是 {VALID_LANES}"
     assert isinstance(adapter.capabilities, Capabilities), "capabilities 必须是 Capabilities 实例"
     assert adapter.capabilities.max_title > 0
+
+
+def check_capability_truthfulness(adapter: PlatformAdapter) -> None:
+    """能力声明真实性（设计 §6.9）：声明了内容形态，flow 就得有对应承载。
+
+    - 至少声明一种内容形态（text/image_text/video/markdown 全 False = 配置错误）。
+    - CDP 通道声明 image_text/video → 必须注册媒体输入选择器（有可执行的上传路径）。
+    - media_kinds（媒体 kind 约束）必须与声明的能力一致。
+    """
+    caps = adapter.capabilities
+    assert any((caps.text, caps.image_text, caps.video, caps.markdown)), \
+        f"{adapter.platform}: capabilities 至少声明一种内容形态"
+    if adapter.lane == "cdp" and (caps.image_text or caps.video):
+        keys = set(getattr(adapter, "selectors", {}) or {})
+        assert keys & MEDIA_SELECTOR_KEYS, \
+            f"{adapter.platform}: 声明了媒体能力（image_text/video）但未注册媒体输入选择器"
+    kinds = tuple(getattr(adapter, "media_kinds", ()) or ())
+    if kinds:
+        assert caps.video or caps.image_text, \
+            f"{adapter.platform}: media_kinds={kinds} 声明了媒体输入但 capabilities 未声明媒体能力"
+        if "video" in kinds:
+            assert caps.video, f"{adapter.platform}: media_kinds 含 video 但 capabilities.video=False"
+        if "image" in kinds and not caps.image_text:
+            assert caps.video, f"{adapter.platform}: media_kinds 含 image 但 capabilities 未声明 image_text/video"
 
 
 def check_unsupported_actions(adapter: PlatformAdapter, ctx: ActionContext) -> None:
@@ -47,6 +77,7 @@ def check_title_limit_enforced(adapter: PlatformAdapter, ctx_factory) -> None:
 
 def run_contract_suite(adapter: PlatformAdapter, ctx: ActionContext, ctx_factory) -> None:
     check_metadata(adapter)
+    check_capability_truthfulness(adapter)
     check_unsupported_actions(adapter, ctx)
     check_publish_contract(adapter, ctx)
     check_title_limit_enforced(adapter, ctx_factory)

@@ -31,6 +31,7 @@ def unregister(platform: str) -> None:  # 测试用
 
 
 def load_builtin_adapters() -> None:
+    from .alipay.adapter import AlipayAdapter  # noqa: F401
     from .baijiahao.adapter import BaijiahaoAdapter  # noqa: F401
     from .bili.adapter import BiliAdapter  # noqa: F401
     from .channels.adapter import ChannelsAdapter  # noqa: F401
@@ -41,11 +42,13 @@ def load_builtin_adapters() -> None:
     from .kuaishou.adapter import KuaishouAdapter  # noqa: F401
     from .mock import MockAdapter  # noqa: F401  参考/冒烟平台（模块导入即注册）
     from .toutiao.adapter import ToutiaoAdapter  # noqa: F401
+    from .weibo.adapter import WeiboAdapter  # noqa: F401
     from .xhs.adapter import XhsAdapter  # noqa: F401
     from .zhihu.adapter import ZhihuAdapter  # noqa: F401  CDP 平台延迟导入 playwright（attach 时）
 
     for adapter in (GzhAdapter(), BiliAdapter(), JuejinAdapter(),
                     XhsAdapter(), ZhihuAdapter(), DouyinAdapter(), ChannelsAdapter(),
                     KuaishouAdapter(), BaijiahaoAdapter(), ToutiaoAdapter(), CsdnAdapter(),
+                    WeiboAdapter(), AlipayAdapter(),
                     MockAdapter()):
         register(adapter)

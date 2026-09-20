@@ -1,13 +1,18 @@
-"""CDP 舰队管理（设计文档 §6.3）：按账号独立 Chrome Profile + 9300+ 端口。
+"""CDP 舰队管理（设计文档 §6.3）：9222 共享浏览器（attach-only）+ 9300+ 按账号独立实例。
 
 红线（继承 daily-checkin P0 契约，违反即事故）：
 - **绝不终止/重启任何 Chrome 进程**——启动一次后交给操作系统；本模块只负责拉起缺失的实例。
-- 端口从 9300 起独占分配；9222 是 daily-checkin 共享 Profile，本模块永生不碰（account add 已拦，此处再拦一道）。
+- 端口两种形态（2026-09-13 起，mac 浏览器共享方案）：
+  - **9222 = daily-checkin 共享浏览器**（专用 chrome-checkin-profile，登录态由用户手工登录）：
+    **attach-only**——在跑就附着，不在跑报错并给出启动指引，**绝不代启、绝不代关**。
+  - **9300+ = 按账号独立 Profile**，端口缺失时本模块可代启。
+  - 其余 <9300 端口一律拒绝（account add 已拦，此处再拦一道）。
 - 断开只 `browser.disconnect()`（Chrome 继续运行），**绝不调用 `browser.close()`**。
 """
 
 from __future__ import annotations
 
+import atexit
 import json
 import shutil
 import subprocess
@@ -16,9 +21,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 
-from ..config import get_settings
-
-MIN_CDP_PORT = 9300  # 9222 属于 daily-checkin，禁碰
+from ..config import MIN_CDP_PORT, SHARED_CDP_PORT, get_settings
 
 
 def _default_chrome_bin() -> str:
@@ -56,34 +59,48 @@ class ChromeLaunch:
     profile: str
 
 
-_playwright_cm = None  # playwright driver 生命周期 = daemon 生命周期（与 Chrome 同级，不主动 stop）
-_pw_lock = threading.Lock()  # 多 worker 线程并发首连时防止双 driver（review R2）
+_local = threading.local()  # 每线程独立一个 driver（sync playwright 绑定创建线程，见 review P1）
+_all_drivers: list = []  # 记录所有已创建的 driver，供 atexit 统一 stop
+_drivers_lock = threading.Lock()
+_pw_atexit_registered = False
 
 
 def _get_playwright():
-    """playwright driver 单例：每进程只 start 一次。
+    """playwright driver：每线程一个单例。
 
-    此前在 _connect 内逐任务 start()——node driver 子进程从不回收，daemon 长跑
-    每发一篇泄漏一个进程（review P1）。driver 与被附着的 Chrome 同为常驻资源。
+    此前在进程级别做单例，但在 sync_playwright 架构下，driver 内部绑定了创建线程。
+    当 workers>1 时，其它 worker 线程调用 connect_over_cdp 会抛出
+    'Cannot switch to a different thread'（review P1）。
+    改用 threading.local() 保障每线程独立持有 driver，数量 <= workers（有界）；
+    同时在 atexit 中汇总 stop() 所有线程的 driver，消除进程退出时的 EPIPE 噪音。
     """
-    global _playwright_cm
-    if _playwright_cm is None:  # 快路径
-        with _pw_lock:
-            if _playwright_cm is None:  # 双检：workers>1 时并发首连
-                from playwright.sync_api import sync_playwright  # 延迟导入：API 通道零浏览器依赖
+    global _pw_atexit_registered
+    cm = getattr(_local, "cm", None)
+    if cm is None:
+        from playwright.sync_api import sync_playwright
 
-                _playwright_cm = sync_playwright().start()
-    return _playwright_cm
+        cm = sync_playwright().start()
+        _local.cm = cm
+        with _drivers_lock:
+            _all_drivers.append(cm)
+            if not _pw_atexit_registered:
+                atexit.register(reset_playwright)
+                _pw_atexit_registered = True
+    return cm
 
 
-def reset_playwright() -> None:  # 测试用
-    global _playwright_cm
-    if _playwright_cm is not None:
+def reset_playwright() -> None:  # 测试与退出收尾用
+    global _all_drivers
+    with _drivers_lock:
+        drivers = list(_all_drivers)
+        _all_drivers.clear()
+    for cm in drivers:
         try:
-            _playwright_cm.stop()
+            cm.stop()
         except Exception:
             pass
-    _playwright_cm = None
+    if hasattr(_local, "cm"):
+        _local.cm = None
 
 
 class ChromeFleet:
@@ -100,9 +117,21 @@ class ChromeFleet:
     def ensure(self, account) -> "CdpBrowserHandle":
         settings = get_settings()
         port = account.cdp_port
+        if port == SHARED_CDP_PORT:
+            # mac 共享方案：附着已在运行的共享浏览器；不在跑时绝不代启
+            # （该实例的生命周期归 daily-checkin，启动命令见运维手册）
+            if not self._prober(port):
+                raise RuntimeError(
+                    f"shared CDP browser on port {SHARED_CDP_PORT} is not running; "
+                    "start it per the ops manual (dedicated chrome-checkin-profile, "
+                    "--remote-debugging-port=9222) — social-hub never auto-launches or kills it"
+                )
+            return self._connect(port)
         if port is None or port < MIN_CDP_PORT:
-            # 红线双保险：9222 及一切 <9300 端口一律拒绝
-            raise ValueError(f"cdp port must be >= {MIN_CDP_PORT} (got {port}; 9222 belongs to daily-checkin)")
+            # 其余 <9300 端口一律拒绝（红线双保险）
+            raise ValueError(
+                f"cdp port must be {SHARED_CDP_PORT} (shared, attach-only) or >= {MIN_CDP_PORT} (got {port})"
+            )
         profile = account.chrome_profile or str(settings.chrome_profiles_dir / f"{account.platform}-{account.alias}")
         if not self._prober(port):
             self._launch(port, profile)
@@ -150,16 +179,36 @@ class CdpBrowserHandle:
     def __init__(self, browser, port: int):
         self.browser = browser
         self.port = port
+        self._owned_pages: list = []  # 记录该客户端主动创建的页面，close 时仅关闭自己打开的页面
 
     def page(self, url: str, timeout_ms: int = 30000):
-        """取（或新建）一个页面并打开 url。优先复用已有空白页，避免越开越多 tab。"""
+        """取（或新建）一个页面并打开 url。
+
+        - 共享端口（9222）：强制 new_page() 并跟踪生命周期，避免多 worker/并发客户端
+          互相抢占同一个 about:blank tab 并打乱导航流（review P2）。
+        - 独立端口（>=9300）：优先复用已有空白页，避免单账号专属浏览器 tab 无休止堆叠。
+        """
         ctx = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-        page = next((p for p in ctx.pages if p.url in ("about:blank", "")), None) or ctx.new_page()
+        if self.port == SHARED_CDP_PORT:
+            page = ctx.new_page()
+            self._owned_pages.append(page)
+        else:
+            page = next((p for p in ctx.pages if p.url in ("about:blank", "")), None)
+            if page is None:
+                page = ctx.new_page()
+                self._owned_pages.append(page)
         page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
         return page
 
     def close(self) -> None:
         # 红线：绝不 browser.close()（那会杀掉用户的 Chrome 实例）
+        # 但主动创建的 tab 应在任务结束时关闭，避免泄漏大量孤儿 tab
+        for p in self._owned_pages:
+            try:
+                p.close()
+            except Exception:
+                pass
+        self._owned_pages.clear()
         try:
             self.browser.disconnect()
         except AttributeError:  # 测试假件可能只有 close 语义

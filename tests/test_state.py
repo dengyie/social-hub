@@ -21,7 +21,8 @@ def test_terminal_has_no_outgoing():
 
 
 def test_happy_path_allowed():
-    for src, dst in [("queued", "running"), ("running", "verifying"), ("verifying", "done")]:
+    for src, dst in [("queued", "running"), ("running", "verifying"), ("verifying", "done"),
+                     ("running", "done")]:  # preview 只填不发
         assert can_transition(src, dst)
 
 

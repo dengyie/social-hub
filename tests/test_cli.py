@@ -63,15 +63,41 @@ def test_cli_duplicate_publish_is_idempotent(env):
 
 
 def test_cli_cdp_port_redline(env):
-    """CDP 通道账号必须 9300+ 端口；Chrome 默认端口 9222 直接拒绝。"""
+    """CDP 通道账号：9300+ 独立实例，或共享浏览器 9222（attach-only）；其余低位端口拒绝。"""
     register(FakeCdpAdapter())
     r = runner.invoke(app, ["account", "add", "fakecdp", "a1"])
     assert r.exit_code == 1
     assert "9300" in _output(r)
-    r = runner.invoke(app, ["account", "add", "fakecdp", "a2", "--cdp-port", "9222"])
+    r = runner.invoke(app, ["account", "add", "fakecdp", "a2", "--cdp-port", "9250"])
     assert r.exit_code == 1
     r = runner.invoke(app, ["account", "add", "fakecdp", "a3", "--cdp-port", "9301"])
     assert r.exit_code == 0, _output(r)
+    r = runner.invoke(app, ["account", "add", "fakecdp", "shared", "--cdp-port", "9222"])
+    assert r.exit_code == 0, _output(r)  # mac 共享方案：attach-only 合法
+
+
+def test_cli_preview_writes_payload_and_rejects_api_lane(env, tmp_path):
+    """--preview 写入 payload；API 通道执行时永久失败（只支持 CDP）。"""
+    import json as _json
+
+    from social_hub.db import session
+    from social_hub.models import AutomationTask
+
+    content = tmp_path / "a.html"
+    content.write_text("<p>hi</p>", encoding="utf-8")
+    assert runner.invoke(app, ["account", "add", "mock", "demo", "--var", "token=demo"]).exit_code == 0
+    assert runner.invoke(app, ["draft", "create", "preview", "--platform", "mock",
+                               "--content-file", str(content)]).exit_code == 0
+    r = runner.invoke(app, ["publish", "--draft", "1", "--platform", "mock",
+                            "--account", "demo", "--preview"])
+    assert r.exit_code == 0, _output(r)
+    with session() as s:
+        t = s.get(AutomationTask, 1)
+        assert _json.loads(t.payload).get("preview") is True
+    r2 = runner.invoke(app, ["publish", "--draft", "1", "--platform", "mock",
+                             "--account", "demo", "--preview", "--wait"])
+    assert r2.exit_code == 1
+    assert "preview" in _output(r2).lower() or "failed" in _output(r2).lower()
 
 
 def test_serve_deny_by_default(env, monkeypatch):

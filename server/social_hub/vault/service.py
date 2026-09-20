@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..adapters.registry import get_adapter
-from ..config import get_settings
+from ..config import MIN_CDP_PORT, SHARED_CDP_PORT, get_settings
 from ..core.state import utcnow
 from ..models import Account, DEFAULT_RATE_LIMIT
 from .crypto import decrypt_dict, encrypt_dict, get_or_create_fernet
 
 # alias 会进入文件系统路径（Chrome Profile、QR 截图）与日志——只允许安全字符
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+LOGIN_CHECK_TTL = timedelta(hours=12)  # 设计 §6.2 / XiaohongshuSkills：登录检测缓存 ≥12h
 
 
 def create_account(
@@ -41,14 +43,18 @@ def create_account(
         proxy=proxy,
     )
     if adapter.lane == "cdp":
-        # CDP 通道每账号独立 Profile + 独占端口段（9300+）；9222 是 Chrome 默认 CDP 端口，
-        # 常被其它自动化工具占用，为避免串号直接禁用
-        if cdp_port is None or cdp_port < 9300:
+        # CDP 端口两种形态（mac 浏览器共享方案，2026-09-13 起）：
+        # - SHARED_CDP_PORT(9222) = daily-checkin 共享浏览器：attach-only，fleet 绝不代启；
+        #   Profile 由外部管理，故不写 chrome_profile
+        # - 9300+ = 按账号独立 Profile，缺失时 fleet 可代启
+        # 其余 <9300 端口拒绝（避免与其它自动化工具的 Chrome 默认 CDP 端口串号）
+        if cdp_port is None or (cdp_port != SHARED_CDP_PORT and cdp_port < MIN_CDP_PORT):
             raise ValueError(
-                "cdp lane account requires cdp_port >= 9300 "
-                "(9222 is the default Chrome CDP debug port, commonly occupied by other tools)"
+                f"cdp lane account requires cdp_port >= {MIN_CDP_PORT} "
+                f"or the shared browser port {SHARED_CDP_PORT} (attach-only)"
             )
-        acc.chrome_profile = str(get_settings().chrome_profiles_dir / f"{platform}-{alias}")
+        if cdp_port != SHARED_CDP_PORT:
+            acc.chrome_profile = str(get_settings().chrome_profiles_dir / f"{platform}-{alias}")
     session.add(acc)
     session.flush()
     return acc
@@ -61,6 +67,14 @@ def get_credentials(account: Account) -> dict:
 def touch_login_check(session: Session, account: Account, state: str) -> None:
     account.login_state = state
     account.last_login_check = utcnow()
+
+
+def login_check_is_fresh(account: Account, now=None) -> bool:
+    """True = last_login_check 仍在 12h TTL 内（编排器可跳过再探 / 信任 expired 缓存）。"""
+    if account.last_login_check is None:
+        return False
+    stamp = now or utcnow()
+    return stamp - account.last_login_check < LOGIN_CHECK_TTL
 
 
 def list_accounts(session: Session) -> list[Account]:

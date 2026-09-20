@@ -8,10 +8,10 @@
 
 双通道架构：
 
-- **API 通道**：平台官方 API，跑在无头服务器上（已支持：微信公众号；B 站 biliup-rs 在路线图）
+- **API 通道**：平台官方 API，跑在无头服务器上（已支持：微信公众号、B 站 biliup-rs、掘金 Cookie REST）
 - **CDP 通道**：附着到按账号隔离的真实 Chrome Profile，为没有稳定 API 的平台准备（小红书等，M1+）
 
-当前状态：**11 个真实平台适配器代码完备**（公众号/B站/掘金/小红书/知乎/抖音/视频号/快手/百家号/头条/CSDN）+ CDP 舰队 + 一键全平台扇出，55 测试全绿。CDP 平台的选择器需真机校准（`shub doctor`），校准 + 真实账号登录后才可实际发布。
+当前状态：**13 个真实平台适配器代码完备**（公众号/B站/掘金/小红书/知乎/抖音/视频号/快手/百家号/头条/CSDN/微博/支付宝生活号）+ CDP 舰队 + 一键全平台扇出，101 测试全绿。CDP 平台的选择器需真机校准（`shub doctor`），校准 + 真实账号登录后才可实际发布；微博/支付宝生活号为预置待校准，默认 fan-out 跳过（显式 `shub publish` 仍可试）。[已有平台的真实发布状态见下方矩阵。]
 
 ## 平台支持矩阵
 
@@ -20,17 +20,19 @@
 | 微信公众号 `gzh` | API | 图文（HTML） | 草稿箱+freepublish 两段式 | app_id/secret + IP 白名单 |
 | B站 `bili` | API | 视频 | bvid 断点（绝不重传） | `biliup-rs login` 扫码（仅个人使用） |
 | 掘金 `juejin` | API | Markdown | draft_id→article_id 三段式 | 浏览器 Cookie |
-| 小红书 `xhs` | CDP | 图文 | 回执断点 | Chrome + 扫码 + 选择器校准 |
-| 知乎 `zhihu` | CDP | 专栏文章 | 回执断点 | Chrome + 登录 + 选择器校准 |
-| 抖音 `douyin` | CDP | 图文/视频 | 回执断点 | Chrome + 扫码 + 选择器校准 |
-| 视频号 `channels` | CDP | 视频/图片 | 回执断点 | Chrome + 微信扫码 + 选择器校准 |
-| 快手 `kuaishou` | CDP | 视频 | 回执断点 + 确认弹窗 | Chrome + 扫码 + 选择器校准 |
-| 百家号 `baijiahao` | CDP | 视频 | 回执断点 | Chrome + 百度登录 + 选择器校准 |
-| 今日头条 `toutiao` | CDP | 图文/视频 | 回执断点 | Chrome + 登录 + 选择器校准（SAU 无头条，全量预置待校准） |
-| CSDN `csdn` | CDP | 博客（Markdown/CodeMirror） | 回执断点 | Chrome + 登录 + 选择器校准 |
+| 小红书 `xhs` | CDP | 图文/视频（媒体必需，按 cover_kind 分流） | 回执断点 | Chrome + 扫码 + 选择器校准 |
+| 知乎 `zhihu` | CDP | 专栏文章（纯文本） | 回执断点 | Chrome + 登录 + 选择器校准 |
+| 抖音 `douyin` | CDP | 图文/视频/纯文案 | 回执断点 | Chrome + 扫码 + 选择器校准 |
+| 视频号 `channels` | CDP | 视频/图片（先进首页再点「发表视频」，不直开 create） | 回执断点 | Chrome + 微信扫码 + 选择器校准 |
+| 快手 `kuaishou` | CDP | 图文/视频（媒体必需，按 cover_kind 分流） | 回执断点 + 确认弹窗 | Chrome + 扫码 + 选择器校准 |
+| 百家号 `baijiahao` | CDP | 视频（必需；标题区等上传后挂载） | 回执断点 | Chrome + 百度登录 + 选择器校准 |
+| 今日头条 `toutiao` | CDP | 图文/视频（按媒体 kind 分流发布页） | 回执断点 | Chrome + 登录 + 选择器校准（SAU 无头条，全量预置待校准） |
+| CSDN `csdn` | CDP | 博客（Markdown） | 回执断点 | Chrome + 登录 + 选择器校准 |
+| 微博 `weibo` | CDP | 图文/视频/纯文字 | 回执断点 | Chrome + 登录 + 选择器校准（**calibrate-only**：fan-out 跳过） |
+| 支付宝生活号 `alipay` | CDP | 视频/图片（必需） | 回执断点 | Chrome + 登录 + 选择器校准（**calibrate-only**：fan-out 跳过） |
 | `mock` | API | 测试假平台 | 全链路 | 无（演示/验收用） |
 
-选择器来源分级：**小红书** = XiaohongshuSkills（2026-03 真机验证）；**抖音/快手/百家号/视频号** = social-auto-upload 同源流程；**头条/CSDN** = 预置待校准。CDP 红线：Chrome 端口一律 9300+、按账号独立 Profile；**绝不杀 Chrome 进程**（只 disconnect）；验证码 → `captcha_wait` 冻结等人。
+选择器来源分级：**小红书** = XiaohongshuSkills（2026-03 真机验证）图文+视频 tab + SAU `target=image|video`；**抖音/快手/百家号/视频号** = social-auto-upload 同源流程（抖音「发布图文」tab；快手 role=tab「图文」；视频号先进 `/platform` 再点「发表视频」；百家号标题区 180s 等待）；**头条/CSDN** = 预置 + 部分真机校准 + SPA `first_has`；**微博/支付宝生活号** = 预置待校准（支付宝 URL 已对齐 SAU `c.alipay.com` + `_appScene=CONTENT`，仍 calibrate-only）。CDP 红线：独立端口一律 ≥9300 按账号独立 Profile；**9222 为共享浏览器 attach-only**（绝不代启/代关/无域清 cookie，见「设计要点」）；**绝不杀 Chrome 进程**（只 disconnect）；验证码 → `captcha_wait` 冻结等人。媒体 kind 由 `media_kinds` 在提交前强校验（图片不会误投视频平台）。
 
 ## 特性
 
@@ -94,7 +96,7 @@ docker compose -f deploy/docker-compose.yml up -d   # 监听 127.0.0.1:8767
 ## 开发与发布
 
 ```bash
-python -m pytest -q          # 32 测试（CI 矩阵：py3.10/3.11/3.12 + Windows）
+python -m pytest -q          # 101 测试（CI 矩阵：py3.10/3.11/3.12 + Windows）
 python scripts/bench.py      # 性能基准
 ```
 
@@ -119,7 +121,7 @@ docs/                # ADR 架构决策记录
 | M0 ✅ | 核心引擎 + 公众号 API 通道 |
 | M1 ✅ 代码 | CDP 舰队管理（9300+ / 独立 Profile）+ 小红书/知乎/抖音/视频号适配器 |
 | M2 ✅ 代码 | B站 biliup-rs 投稿（定时发布 M0 已内建；Web UI 待做） |
-| M3 ✅ 代码 | 扇出（一键全平台）+ 掘金；AI 内容工坊 / MCP 接口待做 |
+| M3 ✅ 代码 | 扇出（一键全平台）+ 掘金 + 微博/支付宝生活号；AI 内容工坊 / MCP 接口待做 |
 | M4 | 生产化（选择器真机校准 + 数据回收 + 告警 + 金丝雀排程） |
 | M5 | 互动引擎（自动评论 / 点赞 / 收藏，复用 AutomationTask 动作泛化） |
 
@@ -127,7 +129,7 @@ docs/                # ADR 架构决策记录
 
 - **双通道**：`lane: api | cdp` 是适配器一等属性；API 通道零浏览器依赖，CDP 通道只为没有稳定 API 的平台存在
 - **动作泛化**：发布只是 `AutomationTask.action_type` 的第一个动作（publish/comment/like/favorite/collect_metrics），评论点赞等互动功能复用同一底座
-- **安全红线**：CDP Chrome 端口一律 9300+ 独立 Profile（9222 是 Chrome 默认 CDP 端口，常被其它自动化占用，直接禁用）；Cookie 清除必须带域名过滤；daemon 崩溃恢复后中断任务标 failed，**绝不自动重发**
+- **安全红线**：CDP Chrome 独立实例端口一律 **9300+** 且按账号独立 Profile（`min 9300` 起递增）；**9222 为共享浏览器（daily-checkin 专用 profile）只看不动——attach-only，绝不代启、绝不代关、绝不无域清 cookie**；其余 <9300 一律拒绝。Cookie 清除必须带域名过滤；daemon 崩溃恢复后中断任务标 failed，**绝不自动重发**
 
 ## License
 

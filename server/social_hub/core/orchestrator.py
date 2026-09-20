@@ -2,7 +2,7 @@
 
 发布主链路（设计文档 §8.1）：running → (adapter.publish) → verifying → (adapter.verify) → done。
 错误分类驱动状态机：Transient→退避重排 / Credentials+NeedsLogin→needs_login / Captcha→captcha_wait / 其余→failed。
-daemon 崩溃后任务由租约回收接管，绝不自动重复发布（§6.1）。
+daemon 崩溃后任务由租约回收接管（running 与 verifying 同等回收），绝不自动重复发布（§6.1）。
 """
 
 from __future__ import annotations
@@ -32,6 +32,22 @@ from .state import TERMINAL, utcnow
 from .taskops import add_event, requeue_transient, task_metrics, transition
 
 log = logging.getLogger(__name__)
+
+# 各通道提交回执键（gzh/mock=publish_id，CDP=publish_receipt，bili=bvid，juejin=article_id）。
+# 命中任一即视为已点发布：续跑只核验、绝不重做 publish（设计 §6.1 / §8.1）。
+SUBMITTED_EVIDENCE_KEYS = ("publish_id", "publish_receipt", "bvid", "article_id")
+
+
+def evidence_is_submitted(prior: dict) -> bool:
+    return any(prior.get(k) for k in SUBMITTED_EVIDENCE_KEYS)
+
+
+def merge_evidence(existing_raw: str | None, patch: dict | None) -> str:
+    """合并证据：禁止整段替换（CDP 回执在 adapter._commit_receipt，detail 不含外层键）。"""
+    data = json.loads(existing_raw or "{}")
+    if patch:
+        data.update(patch)
+    return json.dumps(data, ensure_ascii=False)
 
 ERROR_STATE_MAP: list[tuple[type, str]] = [
     (TransientError, "queued"),
@@ -101,7 +117,7 @@ class Orchestrator:
             ids = list(session.execute(
                 select(AutomationTask.id).where(
                     AutomationTask.claimed_by == self.worker_id,
-                    AutomationTask.status == "running",
+                    AutomationTask.status.in_(("running", "verifying")),
                 )
             ).scalars())
         ce = get_claim_engine()
@@ -146,13 +162,17 @@ class Orchestrator:
             if task is None or task.status != "running":
                 return
             account = session.get(Account, task.account_id)
+            payload = json.loads(task.payload or "{}")
             ctx = ActionContext(task=task, account=account, session_factory=sf,
-                                media_dir=self.settings.media_dir, session=session)
+                                media_dir=self.settings.media_dir, session=session,
+                                preview=bool(payload.get("preview")))
             log.info("task running", extra={"task_id": task.id, "platform": task.platform, "worker": self.worker_id})
             try:
                 adapter = get_adapter(task.platform)
+                if ctx.preview and adapter.lane != "cdp":
+                    raise PermanentError("preview is only supported on CDP-lane platforms")
                 prior = json.loads(task.evidence or "{}")
-                already_submitted = bool(prior.get("publish_id"))
+                already_submitted = evidence_is_submitted(prior)
                 if task.action_type == "publish" and already_submitted:
                     # 断点续跑：上次运行已提交发布（verifying 阶段中断）——绝不重复 publish，直接核验
                     evidence = adapter.verify(ctx)
@@ -166,24 +186,48 @@ class Orchestrator:
                     log.info("task done (resumed)", extra={"task_id": task_id, "platform": task.platform,
                                                            "event": "done", "worker": self.worker_id})
                 elif task.action_type == "publish":
-                    result = adapter.publish(ctx)
-                    transition(session, task, "verifying", {"detail": result.detail},
-                               evidence=json.dumps(result.detail, ensure_ascii=False))
-                    task_metrics(task, "verifying")
-                    session.commit()
+                    from ..vault.service import login_check_is_fresh, touch_login_check
 
-                    evidence = adapter.verify(ctx)
-                    fresh = session.get(AutomationTask, task_id)
-                    if fresh.status == "verifying":
-                        merged = json.loads(fresh.evidence or "{}")
-                        merged["verify"] = evidence.raw
-                        add_event(session, task_id, "verified", {"url": evidence.url})
-                        transition(session, fresh, "done", {"url": evidence.url},
-                                   result_ref=evidence.url, evidence=json.dumps(merged, ensure_ascii=False))
-                        task_metrics(fresh, "done")
+                    if login_check_is_fresh(account) and account.login_state == "expired":
+                        raise NeedsLoginError(
+                            f"{task.platform}:{account.alias} login_state=expired "
+                            "(12h cache); run `shub canary` or login_interactive")
+                    if not login_check_is_fresh(account):
+                        state = adapter.check_login(ctx)
+                        touch_login_check(session, account, state)
+                        session.commit()  # 登录缓存独立于发布成败（12h TTL 必须落盘）
+                        if state != "ok":
+                            raise NeedsLoginError(
+                                f"{task.platform}:{account.alias} check_login={state}")
+                    result = adapter.publish(ctx)
+                    if ctx.preview or not result.submitted:
+                        merged = merge_evidence(task.evidence, result.detail)
+                        transition(session, task, "done", {"preview": True},
+                                   result_ref=None, evidence=merged)
+                        task_metrics(task, "done")
                         session.commit()
-                        log.info("task done", extra={"task_id": task_id, "platform": task.platform,
-                                                     "event": "done", "worker": self.worker_id})
+                        log.info("task preview done", extra={"task_id": task_id, "platform": task.platform,
+                                                             "event": "done", "worker": self.worker_id})
+                    else:
+                        merged = merge_evidence(task.evidence, result.detail)
+                        transition(session, task, "verifying", {"detail": result.detail},
+                                   evidence=merged)
+                        task_metrics(task, "verifying")
+                        session.commit()
+
+                        evidence = adapter.verify(ctx)
+                        fresh = session.get(AutomationTask, task_id)
+                        if fresh.status == "verifying":
+                            verified = json.loads(fresh.evidence or "{}")
+                            verified["verify"] = evidence.raw
+                            add_event(session, task_id, "verified", {"url": evidence.url})
+                            transition(session, fresh, "done", {"url": evidence.url},
+                                       result_ref=evidence.url,
+                                       evidence=json.dumps(verified, ensure_ascii=False))
+                            task_metrics(fresh, "done")
+                            session.commit()
+                            log.info("task done", extra={"task_id": task_id, "platform": task.platform,
+                                                         "event": "done", "worker": self.worker_id})
                 else:
                     handler = getattr(adapter, task.action_type, None)
                     if handler is None:

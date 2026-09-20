@@ -149,6 +149,28 @@ def test_fanout_skips_platforms_without_account(env):
     assert skipped == [{"platform": "juejin", "reason": "no active account"}]
 
 
+def test_fanout_skips_calibrate_only_platforms(env):
+    """weibo/alipay 未校准：有账号也不进默认扇出，必须显式 shub publish。"""
+    with session() as s:
+        create_account(s, "mock", "only-mock", {})
+        create_account(s, "weibo", "wb", {}, cdp_port=9308)
+        d = create_draft(s, title="扇出", platform="mock")
+        from social_hub.models import DraftVariant
+
+        s.add(DraftVariant(draft_id=d.id, platform="weibo", title="扇出", body="hi"))
+        s.commit()
+        did = d.id
+    with session() as s:
+        tasks, skipped = enqueue_fanout(s, did)
+        s.commit()
+    assert [t.platform for t in tasks] == ["mock"]
+    assert any(x["platform"] == "weibo" and "calibrate-only" in x["reason"] for x in skipped)
+    with session() as s:
+        explicit = enqueue_publish(s, did, "weibo", "wb")
+        s.commit()
+        assert explicit.platform == "weibo"
+
+
 def test_fanout_api_endpoint(env):
     with TestClient(create_app()) as client:
         client.post("/api/v1/accounts", json={"platform": "mock", "alias": "a1", "vars": {"token": "x"}})
